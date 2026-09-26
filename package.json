@@ -1,0 +1,12 @@
+{
+  "name": "pi-jot",
+  "version": "0.1.0",
+  "description": "Pi commands that jot notes, ideas and todos exactly as typed, into folders and formats you configure (Obsidian by default)",
+  "type": "module",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/angusforbes/pi-jot.git" },
+  "keywords": ["pi-package", "pi", "notes", "obsidian", "todo", "ideas"],
+  "pi": { "extensions": ["./src/extension.ts"] },
+  "peerDependencies": { "@earendil-works/pi-coding-agent": "*", "typebox": "*" },
+  "scripts": { "test": "bun test" }
+}

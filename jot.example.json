@@ -1,0 +1,17 @@
+{
+  "root": "~/Obsidian",
+  "user": "Angus",
+  "kinds": {
+    "note": { "folder": "Notes" },
+    "idea": { "folder": "Ideas" },
+    "todo": { "folder": "ThingsToDo", "file": "todo.md" },
+    "quote": {
+      "mode": "append",
+      "folder": "Quotes",
+      "file": "{date}.md",
+      "entry": "> {text}\n",
+      "title": "auto",
+      "description": "Save a quote exactly as typed"
+    }
+  }
+}
