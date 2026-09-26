@@ -11,6 +11,8 @@ one settings file.
 /note                                -> the agent writes one note summarising the recent conversation
 /idea build a tractor for the garden -> ~/Obsidian/Ideas/Tractor.md     (the agent picks the title only)
 /idea                                -> the agent writes up an idea from the conversation (asks if none)
+/poem about the first frost          -> the agent writes a poem from your direction -> ~/Obsidian/Poems/<Title>.md
+/poem                                -> a poem inspired by the recent conversation (each poem gets its own file)
 /todo                                -> summary of open items in ThingsToDo/todo.md and the lists it links
 /todo NIM                            -> only the matching list(s)
 /todo add <item>                     -> the agent files "- [ ] <item>" (item kept exactly as typed)
@@ -25,6 +27,8 @@ your own) the **extension writes the text itself**. When a kind wants the agent 
 title (`"title": "agent"`), the text is held by the extension and the agent only calls the
 `jot_save` tool with a title and a pending id: it never retypes your words.
 (`/todo add` still has the agent place the item in the right list, told to copy it verbatim.)
+Kinds with `"compose": true` (like `poem`) are the exception by design: the typed text is the
+agent's *direction*, and the agent writes the entry.
 
 ## Install
 
@@ -62,14 +66,22 @@ field by field, and re-read on every command (adding or renaming a *command* nee
 | `folder`, `file` | Where it goes; `file` may use `{title}` and `{date}` (YYYY-MM-DD). Paths cannot escape the folder. |
 | `entry` | Entry template: `{text}`, `{time}` (HH:MM TZ), `{date}`, `{title}`. Default `- [{time}] {text}`; continuation lines of a `- ` bullet are indented. |
 | `title` | `auto` (from the first words, no agent) or `agent` (agent picks it; see `titleStyle`). |
+| `compose`, `directed` | The agent writes the entry; typed text is its direction (`directed` is the instruction). |
+| `newFile` | Never append to an existing file: use `Title 2.md`, `Title 3.md`, … (poems). Entry templates may use `{author}` (the model, from `jot_save`). |
 | `titleStyle`, `bare`, `description` | What the agent is told about titles, what a bare command asks for, and the command's help text. |
 | `handler` | Hand the entry to another app instead of appending to the file: an argv array, the entry on stdin, `{file}` `{title}` `{kind}` placeholders and `JOT_FILE`/`JOT_TITLE`/`JOT_KIND` in the environment. |
 
 A new kind in the config (like `quote` above) becomes a new command after `/reload`; no code needed.
 
+## Roadmap: `/poem`
+
+- A **style** option (e.g. "in the style of James Merrill").
+- Information about **form** (sonnet, haiku, free verse, …) or **content**.
+- Saving **the user's own words as the poem, exactly as written** (no agent rewriting).
+
 ## Tool
 
-`jot_save { kind, title, pending_id? , text? }`: writes one entry for an append kind and returns
+`jot_save { kind, title, pending_id?, text?, author? }`: writes one entry for an append kind and returns
 the path. With a `pending_id` from a command message it writes the held, as-typed text.
 
 ## Develop

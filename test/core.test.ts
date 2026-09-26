@@ -63,3 +63,18 @@ describe("writing", () => {
     expect(readFileSync(out, "utf8")).toMatch(/hello\nidea Big Idea\n$/);
   });
 });
+
+describe("poem", () => {
+  test("own file with frontmatter; a second poem with the same title gets 'Title 2.md'", async () => {
+    const d = tmp();
+    const cfg = { root: d, user: "u", kinds: DEFAULTS.kinds };
+    const poem = "first line  \nsecond line\n\nnew stanza";
+    const f1 = await writeEntry(cfg, "poem", cfg.kinds.poem, poem, "The Foxes", d, { author: "Claude" });
+    const f2 = await writeEntry(cfg, "poem", cfg.kinds.poem, "again", "The Foxes", d, { author: "Claude" });
+    expect(f1).toBe(join(d, "Poems", "The Foxes.md"));
+    expect(f2).toBe(join(d, "Poems", "The Foxes 2.md"));
+    const s = readFileSync(f1, "utf8");
+    expect(s).toMatch(/^---\ntitle: The Foxes\nauthor: Claude\ncreated: \d{4}-\d\d-\d\d\ntags:\n  - poem\n---\n# The Foxes\n\n/);
+    expect(s).toContain(poem + "\n");
+  });
+});

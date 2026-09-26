@@ -25,6 +25,12 @@ export type Kind = {
   titleStyle?: string;
   /** Instruction used when the command is run with no text. */
   bare?: string;
+  /** The agent writes the entry: typed text is its direction (topic, subject), not the entry itself. */
+  compose?: boolean;
+  /** Instruction for composing from typed direction ({user} allowed); used when compose is true. */
+  directed?: string;
+  /** Never append to an existing file: pick "Title 2.md", "Title 3.md", … instead. */
+  newFile?: boolean;
   /** Optional external command instead of appending to the file: argv, entry on stdin,
    *  placeholders {file} {title} {kind}; env JOT_FILE, JOT_TITLE, JOT_KIND. */
   handler?: string[];
@@ -58,6 +64,19 @@ export const DEFAULTS: JotConfig = {
       titleStyle: 'short and human-readable, naming the main concept (e.g. "my idea is to build a tractor to automate garden soil prep" -> "Tractor")',
       description: "Save an idea exactly as typed; the agent picks a title (bare /idea = from the conversation)",
       bare: "Look at the recent conversation for an idea or proposal worth keeping and write it up clearly in a few sentences. If there is no clear idea, ask {user} what to save instead of inventing one (and do not call jot_save).",
+    },
+    poem: {
+      mode: "append",
+      folder: "Poems",
+      file: "{title}.md",
+      entry: "---\ntitle: {title}\nauthor: {author}\ncreated: {date}\ntags:\n  - poem\n---\n# {title}\n\n{text}\n",
+      title: "agent",
+      compose: true,
+      newFile: true,
+      titleStyle: "the poem's title",
+      description: "Write a poem into its own file (optional direction: topic, subject; bare /poem = from the conversation)",
+      directed: "Write a short, original poem following {user}'s direction between the markers (topic, subject or anything else it asks for). Choose whatever style, form, rhythm and tone suit it unless the direction says otherwise. No need to force rhyme. Write it yourself; do not delegate.",
+      bare: "Write a short, original poem inspired by what {user} and you have been discussing most recently. Choose whatever style, form, rhythm and tone suit it. Draw on specific images, questions or tensions from the conversation rather than summarising the task. No need to force rhyme. Write it yourself; do not delegate.",
     },
     todo: {
       mode: "list",
@@ -137,11 +156,11 @@ export function fill(tpl: string, vars: Record<string, string>): string {
 }
 
 /** The entry for a file: continuation lines of a "- " bullet are indented so they stay inside it. */
-export function renderEntry(kind: Kind, text: string, title: string, d = new Date()): string {
+export function renderEntry(kind: Kind, text: string, title: string, d = new Date(), extra: Record<string, string> = {}): string {
   const tpl = kind.entry ?? "- [{time}] {text}";
   const body = text.replace(/\r\n?/g, "\n");
   const indented = tpl.trimStart().startsWith("- ") ? body.split("\n").join("\n  ") : body;
-  const out = fill(tpl, { text: indented, time: stamp(d), date: dateStr(d), title });
+  const out = fill(tpl, { author: "", ...extra, text: indented, time: stamp(d), date: dateStr(d), title });
   return out.endsWith("\n") ? out : out + "\n";
 }
 
@@ -156,10 +175,13 @@ export function resolvePaths(cfg: JotConfig, kind: Kind, title: string, d = new 
 }
 
 /** Append the entry (or hand it to the kind's handler). Returns the file path. */
-export async function writeEntry(cfg: JotConfig, kindName: string, kind: Kind, text: string, title: string, cwd = process.cwd()): Promise<string> {
+export async function writeEntry(cfg: JotConfig, kindName: string, kind: Kind, text: string, title: string, cwd = process.cwd(), extra: Record<string, string> = {}): Promise<string> {
   const d = new Date();
-  const { file } = resolvePaths(cfg, kind, title, d, cwd);
-  const entry = renderEntry(kind, text, safeTitle(title), d);
+  let { file } = resolvePaths(cfg, kind, title, d, cwd);
+  if (kind.newFile) {
+    for (let n = 2; existsSync(file) && n < 1000; n++) file = resolvePaths(cfg, kind, `${safeTitle(title)} ${n}`, d, cwd).file;
+  }
+  const entry = renderEntry(kind, text, safeTitle(title), d, extra);
   if (kind.handler?.length) {
     const vars = { file, title: safeTitle(title), kind: kindName };
     const [cmd, ...args] = kind.handler.map((a) => fill(a, vars));

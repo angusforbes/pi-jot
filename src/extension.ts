@@ -23,8 +23,24 @@ function appendBare(cfg: JotConfig, name: string, kind: Kind): string {
   const how = fill(kind.bare ?? `Write one short ${name} from the most useful point in the last few exchanges.`, { user: cfg.user });
   return `/${kind.command ?? name} was used with NO text. ${how}
 - Choose a title: ${kind.titleStyle ?? "short and human-readable"}. No slashes.
-- Save it by calling the jot_save tool with kind "${name}", that title and the text (one entry; pi-jot adds the timestamp and file).
-- Then reply with one line and a clickable file:// link to the path jot_save returns. Do not print the ${name} in chat.`;
+${kind.compose
+    ? `- Present the ${name} in chat (title, then the ${name}; no preamble or analysis).
+- Save it by calling the jot_save tool with kind "${name}", that title, the text (without the title line) and author (your model name, e.g. "Claude Opus 5.5").
+- Then add one line with a clickable file:// link to the path jot_save returns.`
+    : `- Save it by calling the jot_save tool with kind "${name}", that title and the text (one entry; pi-jot adds the timestamp and file).
+- Then reply with one line and a clickable file:// link to the path jot_save returns. Do not print the ${name} in chat.`}`;
+}
+
+function composeDirected(cfg: JotConfig, name: string, kind: Kind, direction: string): string {
+  const how = fill(kind.directed ?? `Write a ${name} following ${cfg.user}'s direction between the markers.`, { user: cfg.user });
+  return `/${kind.command ?? name} was used with a direction. ${how}
+
+${block("JOT-DIRECTION", direction)}
+
+- Choose a title: ${kind.titleStyle ?? "short and human-readable"}. No slashes.
+- Present the ${name} in chat (title, then the ${name}; no preamble or analysis).
+- Save it by calling the jot_save tool with kind "${name}", that title, the text (without the title line) and author (your model name, e.g. "Claude Opus 5.5").
+- Then add one line with a clickable file:// link to the path jot_save returns.`;
 }
 
 function todoBase(cfg: JotConfig, kind: Kind): string {
@@ -104,6 +120,7 @@ export default function piJot(pi: ExtensionAPI) {
 
         const { title, text } = parseInput(raw);
         if (!text) { send(ctx, appendBare(cfg, name, kind)); return; }
+        if (kind.compose) { send(ctx, composeDirected(cfg, name, kind, raw.replace(/^\s+|\s+$/g, ""))); return; }
         if (title || kind.title !== "agent") {
           try {
             const file = await writeEntry(cfg, name, kind, text, title ?? titleFrom(text, name[0].toUpperCase() + name.slice(1)), ctx.cwd ?? process.cwd());
@@ -132,6 +149,7 @@ export default function piJot(pi: ExtensionAPI) {
       title: Type.String({ description: "Title (becomes the file name for {title}.md kinds)" }),
       pending_id: Type.Optional(Type.String({ description: "The pending_id from the /command message" })),
       text: Type.Optional(Type.String({ description: "Entry text, only when there is no pending_id" })),
+      author: Type.Optional(Type.String({ description: "Who wrote it (for kinds whose entry uses {author}, e.g. poem): your model name" })),
     }),
     async execute(_id: string, p: any, _signal: any, _onUpdate: any, ctx: any) {
       const cfg = loadConfig();
@@ -144,7 +162,8 @@ export default function piJot(pi: ExtensionAPI) {
       const kind = cfg.kinds[kindName];
       if (!kind || kind.mode !== "append") throw new Error(`Unknown jot kind "${kindName}" (have: ${Object.keys(cfg.kinds).filter((k) => cfg.kinds[k].mode === "append").join(", ")})`);
       if (!text?.trim()) throw new Error("No text: pass text, or the pending_id from the /command message");
-      const file = await writeEntry(cfg, kindName, kind, text, safeTitle(String(p.title)), ctx?.cwd ?? process.cwd());
+      const author = String(p.author ?? ctx?.model?.name ?? ctx?.model?.id ?? "");
+      const file = await writeEntry(cfg, kindName, kind, text, safeTitle(String(p.title)), ctx?.cwd ?? process.cwd(), { author });
       if (p.pending_id) pending.delete(p.pending_id);
       return { content: [{ type: "text", text: `Saved to ${file}` }], details: { file, kind: kindName } };
     },
