@@ -31,7 +31,7 @@ ${kind.compose
 - Then reply with one line and a clickable file:// link to the path jot_save returns. Do not print the ${name} in chat.`}`;
 }
 
-function composeDirected(cfg: JotConfig, name: string, kind: Kind, direction: string): string {
+function composeDirected(cfg: JotConfig, name: string, kind: Kind, direction: string, keepId = ""): string {
   const how = fill(kind.directed ?? `Write a ${name} following ${cfg.user}'s direction between the markers.`, { user: cfg.user });
   return `/${kind.command ?? name} was used with a direction. ${how}
 
@@ -39,7 +39,9 @@ ${block("JOT-DIRECTION", direction)}
 
 - Choose a title: ${kind.titleStyle ?? "short and human-readable"}. No slashes.
 - Present the ${name} in chat (title, then the ${name}; no preamble or analysis).
-- Save it by calling the jot_save tool with kind "${name}", that title, the text (without the title line) and author (your model name, e.g. "Claude Opus 5.5").
+${keepId
+    ? `- Save it by calling the jot_save tool with kind "${name}", pending_id "${keepId}", that title, the text (your ${name} only, without the title line) and author (your model name, e.g. "Claude Opus 5.5"). pi-jot puts ${cfg.user}'s words exactly as typed first, then your ${name}: don't copy them into the text.`
+    : `- Save it by calling the jot_save tool with kind "${name}", that title, the text (without the title line) and author (your model name, e.g. "Claude Opus 5.5").`}
 - Then add one line with a clickable file:// link to the path jot_save returns.`;
 }
 
@@ -95,7 +97,7 @@ ${base}`;
 }
 
 export default function piJot(pi: ExtensionAPI) {
-  const pending = new Map<string, { kind: string; text: string }>();
+  const pending = new Map<string, { kind: string; text: string; keep?: boolean }>();
   let seq = 0;
 
   const send = (ctx: any, msg: string) => {
@@ -120,7 +122,12 @@ export default function piJot(pi: ExtensionAPI) {
 
         const { title, text } = parseInput(raw);
         if (!text) { send(ctx, appendBare(cfg, name, kind)); return; }
-        if (kind.compose) { send(ctx, composeDirected(cfg, name, kind, raw.replace(/^\s+|\s+$/g, ""))); return; }
+        if (kind.compose) {
+          const direction = raw.replace(/^\s+|\s+$/g, "");
+          let keepId = "";
+          if (kind.keepTyped) { keepId = `jot-${Date.now().toString(36)}-${++seq}`; pending.set(keepId, { kind: name, text: direction, keep: true }); } // kept exactly as typed
+          send(ctx, composeDirected(cfg, name, kind, direction, keepId)); return;
+        }
         if (title || kind.title !== "agent") {
           try {
             const file = await writeEntry(cfg, name, kind, text, title ?? titleFrom(text, name[0].toUpperCase() + name.slice(1)), ctx.cwd ?? process.cwd());
@@ -157,7 +164,11 @@ export default function piJot(pi: ExtensionAPI) {
       if (p.pending_id) {
         const got = pending.get(p.pending_id);
         if (!got) throw new Error(`Unknown or already used pending_id ${p.pending_id}`);
-        kindName = got.kind; text = got.text;
+        kindName = got.kind;
+        if (got.keep) { // keepTyped: the typed words exactly, then the agent's entry
+          if (!String(p.text ?? "").trim()) throw new Error(`Pass your ${kindName} as text (pi-jot adds the typed words before it)`);
+          text = `${got.text}\n\n${String(p.text).replace(/^\s+|\s+$/g, "")}`;
+        } else text = got.text;
       }
       const kind = cfg.kinds[kindName];
       if (!kind || kind.mode !== "append") throw new Error(`Unknown jot kind "${kindName}" (have: ${Object.keys(cfg.kinds).filter((k) => cfg.kinds[k].mode === "append").join(", ")})`);

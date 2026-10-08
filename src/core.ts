@@ -27,6 +27,9 @@ export type Kind = {
   bare?: string;
   /** The agent writes the entry: typed text is its direction (topic, subject), not the entry itself. */
   compose?: boolean;
+  /** With compose: also keep the typed text, exactly as typed, before the agent's entry (Angus, 2026-10-07:
+   *  "If my poem command has a poem, then include that verbatim … along with your poem"). */
+  keepTyped?: boolean;
   /** Instruction for composing from typed direction ({user} allowed); used when compose is true. */
   directed?: string;
   /** Never append to an existing file: pick "Title 2.md", "Title 3.md", … instead. */

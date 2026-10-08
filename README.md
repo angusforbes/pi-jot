@@ -67,6 +67,7 @@ field by field, and re-read on every command (adding or renaming a *command* nee
 | `entry` | Entry template: `{text}`, `{time}` (HH:MM TZ), `{date}`, `{title}`. Default `- [{time}] {text}`; continuation lines of a `- ` bullet are indented. |
 | `title` | `auto` (from the first words, no agent) or `agent` (agent picks it; see `titleStyle`). |
 | `compose`, `directed` | The agent writes the entry; typed text is its direction (`directed` is the instruction). |
+| `keepTyped` | With `compose`: the typed text is also kept, exactly as typed (held by the extension, never retyped by the agent), before the agent's entry in the same file. E.g. `"poem": {"keepTyped": true}`: `/poem <your lines>` saves your lines, then the agent's poem. |
 | `newFile` | Never append to an existing file: use `Title 2.md`, `Title 3.md`, … (poems). Entry templates may use `{author}` (the model, from `jot_save`). |
 | `titleStyle`, `bare`, `description` | What the agent is told about titles, what a bare command asks for, and the command's help text. |
 | `handler` | Hand the entry to another app instead of appending to the file: an argv array, the entry on stdin, `{file}` `{title}` `{kind}` placeholders and `JOT_FILE`/`JOT_TITLE`/`JOT_KIND` in the environment. |
