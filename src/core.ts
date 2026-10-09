@@ -30,6 +30,10 @@ export type Kind = {
   /** With compose: also keep the typed text, exactly as typed, before the agent's entry (Angus, 2026-10-07:
    *  "If my poem command has a poem, then include that verbatim … along with your poem"). */
   keepTyped?: boolean;
+  /** After the entry, the agent adds a marked "## Summary (<who>)" and "## Discussion so far" from the preceding
+   *  conversation (Angus, 2026-10-08, /jot-idea). With typed text the text stays exactly as typed above them; with
+   *  none, the agent's summary of the conversation is the entry (marked as a summary). */
+  discuss?: boolean;
   /** Instruction for composing from typed direction ({user} allowed); used when compose is true. */
   directed?: string;
   /** Never append to an existing file: pick "Title 2.md", "Title 3.md", … instead. */
@@ -65,8 +69,9 @@ export const DEFAULTS: JotConfig = {
       entry: "- [{time}] {text}",
       title: "agent",
       titleStyle: 'short and human-readable, naming the main concept (e.g. "my idea is to build a tractor to automate garden soil prep" -> "Tractor")',
-      description: "Save an idea exactly as typed; the agent picks a title (bare /idea = from the conversation)",
-      bare: "Look at the recent conversation for an idea or proposal worth keeping and write it up clearly in a few sentences. If there is no clear idea, ask {user} what to save instead of inventing one (and do not call jot_save).",
+      description: "Save an idea exactly as typed, then the agent's marked summary and discussion; bare /idea = a summary of the conversation as the idea",
+      bare: "Summarise the preceding conversation as an idea: what it is and why, in a few sentences, in your own words (it is saved marked as your summary).",
+      discuss: true,
     },
     poem: {
       mode: "append",
@@ -206,4 +211,13 @@ export async function writeEntry(cfg: JotConfig, kindName: string, kind: Kind, t
   } catch { /* new file */ }
   await appendFile(file, prefix + entry, "utf8");
   return file;
+}
+
+/** The marked sections a "discuss" kind appends after its entry. */
+export function discussSections(who: string, summary: string, discussion: string, d = new Date()): string {
+  const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`, out: string[] = []; // local date
+  const sum = String(summary ?? "").trim(), dis = String(discussion ?? "").trim();
+  if (sum) out.push(`## Summary (${who})\n${sum}`);
+  if (dis) out.push(`## Discussion so far (${who}, ${day})\n${dis}`);
+  return out.length ? `\n${out.join("\n\n")}\n` : "";
 }

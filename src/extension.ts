@@ -4,7 +4,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { homedir } from "node:os";
 import { Type } from "typebox";
-import { fill, type JotConfig, type Kind, loadConfig, parseInput, resolvePaths, safeTitle, titleFrom, writeEntry } from "./core.ts";
+import { appendFile } from "node:fs/promises";
+import { discussSections, fill, type JotConfig, type Kind, loadConfig, parseInput, resolvePaths, safeTitle, titleFrom, writeEntry } from "./core.ts";
 
 const block = (tag: string, text: string) => `<<<${tag}\n${text}\n${tag}>>>`;
 const tilde = (p: string) => (p.startsWith(homedir()) ? "~" + p.slice(homedir().length) : p);
@@ -15,7 +16,8 @@ function appendWithText(cfg: JotConfig, name: string, kind: Kind, id: string, te
 ${block("JOT-TEXT", text)}
 
 - Choose a title: ${kind.titleStyle ?? "short and human-readable"}. No slashes.
-- Call the jot_save tool with kind "${name}", pending_id "${id}" and that title. Do NOT pass the text: pi-jot writes it exactly as typed.
+- Call the jot_save tool with kind "${name}", pending_id "${id}" and that title. Do NOT pass the text: pi-jot writes it exactly as typed.${kind.discuss ? `
+- Also pass summary (a short paragraph: what the ${name} is and why, in your own words) and discussion (the relevant points of the conversation before this command, as "- " bullets, including open questions). pi-jot adds them after ${cfg.user}'s text as "## Summary (<you>)" and "## Discussion so far", marked as yours; his text stays exactly as typed. If there was no earlier conversation about it, pass only summary. Pass author = your agent name if you have one (e.g. Lightbox), else your model name.` : ""}
 - Then confirm with one line and a clickable file:// link to the path jot_save returns. Do not print the ${name} back in chat.`;
 }
 
@@ -27,6 +29,9 @@ ${kind.compose
     ? `- Present the ${name} in chat (title, then the ${name}; no preamble or analysis).
 - Save it by calling the jot_save tool with kind "${name}", that title, the text (without the title line) and author (your model name, e.g. "Claude Opus 5.5").
 - Then add one line with a clickable file:// link to the path jot_save returns.`
+    : kind.discuss
+    ? `- Save it by calling the jot_save tool with kind "${name}", that title, text = your summary (pi-jot marks it as a summary by you), discussion = the relevant points of the conversation as "- " bullets, including open questions, and author = your agent name if you have one (e.g. Lightbox), else your model name.
+- Then reply with one line and a clickable file:// link to the path jot_save returns. Do not print the ${name} in chat.`
     : `- Save it by calling the jot_save tool with kind "${name}", that title and the text (one entry; pi-jot adds the timestamp and file).
 - Then reply with one line and a clickable file:// link to the path jot_save returns. Do not print the ${name} in chat.`}`;
 }
@@ -156,6 +161,8 @@ export default function piJot(pi: ExtensionAPI) {
       title: Type.String({ description: "Title (becomes the file name for {title}.md kinds)" }),
       pending_id: Type.Optional(Type.String({ description: "The pending_id from the /command message" })),
       text: Type.Optional(Type.String({ description: "Entry text, only when there is no pending_id" })),
+      summary: Type.Optional(Type.String({ description: "For kinds that ask for it (e.g. idea): your short summary, saved under a marked heading after the entry" })),
+      discussion: Type.Optional(Type.String({ description: "For kinds that ask for it: the relevant points of the preceding conversation as - bullets" })),
       author: Type.Optional(Type.String({ description: "Who wrote it (for kinds whose entry uses {author}, e.g. poem): your model name" })),
     }),
     async execute(_id: string, p: any, _signal: any, _onUpdate: any, ctx: any) {
@@ -174,7 +181,11 @@ export default function piJot(pi: ExtensionAPI) {
       if (!kind || kind.mode !== "append") throw new Error(`Unknown jot kind "${kindName}" (have: ${Object.keys(cfg.kinds).filter((k) => cfg.kinds[k].mode === "append").join(", ")})`);
       if (!text?.trim()) throw new Error("No text: pass text, or the pending_id from the /command message");
       const author = String(p.author ?? ctx?.model?.name ?? ctx?.model?.id ?? "");
+      // discuss kinds: who wrote the summary (a hyprpi Thoughts or agent name when there is one); with no typed text the entry is marked as a summary
+      const who = String(process.env.HYPRPI_THOUGHTS_ROOM ? `Thoughts-${process.env.HYPRPI_THOUGHTS_ROOM}` : String(p.author ?? "").trim() || author || "agent");
+      if (kind.discuss && !p.pending_id) text = `(summary by ${who}) ${String(text).trim()}`;
       const file = await writeEntry(cfg, kindName, kind, text, safeTitle(String(p.title)), ctx?.cwd ?? process.cwd(), { author });
+      if (kind.discuss && !kind.handler?.length) { const extra = discussSections(who, p.pending_id ? p.summary : "", p.discussion); if (extra) await appendFile(file, extra, "utf8"); }
       if (p.pending_id) pending.delete(p.pending_id);
       return { content: [{ type: "text", text: `Saved to ${file}` }], details: { file, kind: kindName } };
     },
