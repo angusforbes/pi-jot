@@ -5,7 +5,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { homedir } from "node:os";
 import { Type } from "typebox";
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { dirname, resolve, sep } from "node:path";
 import { addWords, dateStr, discussSections, fill, type JotConfig, type Kind, loadConfig, parseInput, PLAN_STATUSES, planStatus, renderPlan, resolvePaths, safeTitle, setBody, setStatus, tickTask, titleFrom, wordsEntry, writeEntry } from "./core.ts";
 
@@ -234,7 +234,8 @@ export default function piJot(pi: ExtensionAPI) {
     const folders = Object.values(cfg.kinds).filter((k) => k.converse).map((k) => resolvePaths(cfg, k, "x", new Date(), cwd).folder);
     const r = String(ref).trim().replace(/^file:\/\//, "");
     const cands = r.includes("/") ? [resolve(cwd, r.replace(/^~(?=\/)/, homedir()))] : folders.map((f) => resolve(f, safeTitle(r) + ".md"));
-    for (const f of cands) if (folders.some((d) => (f + sep).startsWith(d + sep)) && existsSync(f)) return f;
+    const real = (p: string) => { try { return realpathSync(p); } catch { return p; } }; // a symlink must not lead out of Plans/
+    for (const f of cands) if (existsSync(f) && folders.some((d) => (real(f) + sep).startsWith(real(d) + sep))) return f;
     throw new Error(`pi-jot: no plan note "${ref}" in ${[...new Set(folders.map(tilde))].join(", ")}`);
   }
 

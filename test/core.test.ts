@@ -109,3 +109,14 @@ describe("plan notes (J398)", () => {
     expect(tickTask(n, "T1", false)).toContain("- [ ] T1 build");
   });
 });
+
+describe("plan task ids (J398 review)", () => {
+  test("T0b is an id, distinct from T0", () => {
+    const n = setBody(renderPlan({ title: "x", kind: "parallel", status: "ready", words: [], body: "", user: "A" }), "- [ ] T0 card\n- [ ] T0b groundwork\n- [ ] T1 next · after: T0b");
+    const t = tickTask(n, "T0b");
+    expect(t).toContain("- [x] T0b groundwork");
+    expect(t).toContain("- [ ] T0 card");
+    expect(t).toContain("- [ ] T1 next");
+    expect(tickTask(n, "T0")).toContain("- [x] T0 card");
+  });
+});
