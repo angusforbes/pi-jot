@@ -17,7 +17,28 @@ one settings file.
 /todo NIM                            -> only the matching list(s)
 /todo add <item>                     -> the agent files "- [ ] <item>" (item kept exactly as typed)
 /todo done <item>                    -> the agent ticks the best match and moves it to ## Done
+/soliloquy <your thinking>           -> a planning conversation: summary + numbered questions each turn -> ~/Obsidian/Plans/<Title>.md
+/parallel @project [notes]           -> a conversation that plans the rest of a project as parallel tasks -> ~/Obsidian/Plans/<Title>.md
 ```
+
+## Planning conversations: `/soliloquy`, `/parallel`
+
+Kinds with `"converse": true` are conversations, not one-shot saves. The agent picks a title, and after every
+turn it calls `jot_plan` with the whole note body; the note in `Plans/` is written after the first turn and
+rewritten after each one, so nothing is lost if you stop. Your words are kept by the extension, exactly as
+typed, turn by turn (typed input in an agent window; hyprpi's Thoughts sends them with the hidden `/jot-said`
+command). The agent plans only: it builds nothing and may at most ask "start building now?". Say "done" to
+finish: the note's status becomes `ready` (statuses: drafting, ready, running, done).
+
+- `/soliloquy TEXT`: think a project through out loud; each turn a summary and as many numbered questions as
+  needed. The note: your words, Summary, Decisions so far, Open questions, Next.
+- `/parallel @project [notes]`: what is done and left (a helper agent may read it), then questions on
+  priorities and design. The note: Project, Done so far, Left to do, Decisions, Open questions, and a Plan
+  with Groundwork, Parallel tasks (`- [ ] T1 task · agent · model · after · tester · done when`), Order,
+  Integration and testing.
+
+`jot_plan` also reads a plan note (`action: "read"`), sets its status and ticks tasks (`action: "tick",
+task: "T1"`), so an agent without file tools (hyprpi's Thoughts) can run a ready plan.
 
 ## Exactly as typed
 
@@ -70,6 +91,7 @@ field by field, and re-read on every command (adding or renaming a *command* nee
 | `keepTyped` | With `compose`: the typed text is also kept, exactly as typed (held by the extension, never retyped by the agent), before the agent's entry in the same file. E.g. `"poem": {"keepTyped": true}`: `/poem <your lines>` saves your lines, then the agent's poem. |
 | `newFile` | Never append to an existing file: use `Title 2.md`, `Title 3.md`, … (poems). Entry templates may use `{author}` (the model, from `jot_save`). |
 | `titleStyle`, `bare`, `description` | What the agent is told about titles, what a bare command asks for, and the command's help text. |
+| `converse`, `needsProject`, `opening`, `turn` | A planning conversation (see above): `opening` says what the first turn does, `turn` what each turn's reply and note body contain; `needsProject` makes the first argument `@project`. |
 | `handler` | Hand the entry to another app instead of appending to the file: an argv array, the entry on stdin, `{file}` `{title}` `{kind}` placeholders and `JOT_FILE`/`JOT_TITLE`/`JOT_KIND` in the environment. |
 
 A new kind in the config (like `quote` above) becomes a new command after `/reload`; no code needed.
@@ -84,6 +106,9 @@ A new kind in the config (like `quote` above) becomes a new command after `/relo
 
 `jot_save { kind, title, pending_id?, text?, author? }`: writes one entry for an append kind and returns
 the path. With a `pending_id` from a command message it writes the held, as-typed text.
+
+`jot_plan { action?, title?, body?, status?, close?, file?, task?, done? }`: the planning conversation's note
+(see above); `read`, `status` and `tick` work on any note in a conversation kind's folder.
 
 ## Develop
 

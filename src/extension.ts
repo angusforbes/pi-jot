@@ -4,8 +4,24 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { homedir } from "node:os";
 import { Type } from "typebox";
-import { appendFile } from "node:fs/promises";
-import { discussSections, fill, type JotConfig, type Kind, loadConfig, parseInput, resolvePaths, safeTitle, titleFrom, writeEntry } from "./core.ts";
+import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { dirname, resolve, sep } from "node:path";
+import { addWords, dateStr, discussSections, fill, type JotConfig, type Kind, loadConfig, parseInput, PLAN_STATUSES, planStatus, renderPlan, resolvePaths, safeTitle, setBody, setStatus, tickTask, titleFrom, wordsEntry, writeEntry } from "./core.ts";
+
+// J398: an open planning conversation (/jot-soliloquy, /jot-parallel) in this session. Persisted with
+// pi.appendEntry so it survives a restart or /reload of the same session.
+type Conv = { kind: string; file: string; title: string; project?: string; words: string[]; created: string; closed?: boolean };
+const CONV_ENTRY = "pi-jot-conversation";
+const CONV_CTX = "pi-jot-plan-turn";
+
+function planRules(cfg: JotConfig, name: string, kind: Kind, c: { project?: string; file?: string }): string {
+  const user = cfg.user;
+  return `${fill(kind.turn ?? "Each turn: reply in chat, then call jot_plan with the whole note body.", { user, project: c.project ? "@" + c.project : "the project" })}
+- ${user}'s words are kept in the note by pi-jot itself, exactly as typed, every turn: never copy them into the body.
+- PLAN ONLY: do not build, change code, open agents to build, or create a project card while planning (a helper that only READS is fine). When you are confident the plan is complete, you may ASK "start building now?"; nothing starts until ${user} says go.
+- When ${user} says "done" (or you have no questions left and he agrees), call jot_plan once more with status "ready" and close: true, then give him one line with a clickable file:// link to the note.${c.file ? `\n- The note: ${c.file}` : ""}`;
+}
 
 const block = (tag: string, text: string) => `<<<${tag}\n${text}\n${tag}>>>`;
 const tilde = (p: string) => (p.startsWith(homedir()) ? "~" + p.slice(homedir().length) : p);
@@ -104,6 +120,50 @@ ${base}`;
 export default function piJot(pi: ExtensionAPI) {
   const pending = new Map<string, { kind: string; text: string; keep?: boolean }>();
   let seq = 0;
+  let conv: Conv | null = null; // J398: the open planning conversation, if any
+  const saveConv = () => { try { pi.appendEntry(CONV_ENTRY, conv ?? { closed: true }); } catch { /* no session */ } };
+  pi.on("session_start", async (_e: any, ctx: any) => {
+    conv = null;
+    try {
+      const last = (ctx.sessionManager.getEntries() as any[]).filter((e) => e.type === "custom" && e.customType === CONV_ENTRY).pop();
+      if (last?.data && !last.data.closed) conv = last.data as Conv;
+    } catch { /* no session entries */ }
+  });
+  // The user's words go into the open note verbatim (to the words section; before the note exists, into conv.words).
+  const keepWords = async (text: string) => {
+    if (!conv || !String(text).trim()) return false;
+    if (conv.file && existsSync(conv.file)) await writeFile(conv.file, addWords(await readFile(conv.file, "utf8"), text), "utf8");
+    else conv.words.push(wordsEntry(text));
+    saveConv();
+    return true;
+  };
+  // Agent windows: what the user typed (not commands, not messages other extensions send).
+  pi.on("input", async (event: any) => {
+    if (conv && event.source === "interactive" && typeof event.text === "string" && !event.text.trimStart().startsWith("/")) {
+      try { await keepWords(event.text); } catch (err) { console.error("pi-jot:", (err as Error).message); }
+    }
+    return { action: "continue" };
+  });
+  // hyprpi Thoughts (RPC): the panel sends the user's words with this command before his message, because the
+  // message itself arrives wrapped (digest, "[Angus]" header). A no-op when no conversation is open.
+  pi.registerCommand("jot-said", {
+    description: "(for hyprpi Thoughts) keep these words, exactly as typed, in the open /jot-soliloquy or /jot-parallel note",
+    handler: async (args) => { try { await keepWords(typeof args === "string" ? args : ""); } catch (err) { console.error("pi-jot:", (err as Error).message); } },
+  });
+  // Every turn while a conversation is open: the turn's duties, as hidden context (only the latest is kept).
+  pi.on("before_agent_start", async () => {
+    if (!conv) return;
+    let cfg: JotConfig; try { cfg = loadConfig(); } catch { return; }
+    const kind = cfg.kinds[conv.kind]; if (!kind) return;
+    return { message: { customType: CONV_CTX, display: false, content: `[/${kind.command ?? conv.kind} conversation open${conv.project ? ` about @${conv.project}` : ""}: "${conv.title || "(untitled yet)"}"]\n${planRules(cfg, conv.kind, kind, conv)}` } };
+  });
+  pi.on("context", async (event: any) => {
+    const msgs = event.messages as any[];
+    const idx = msgs.map((m, i) => (m?.customType === CONV_CTX ? i : -1)).filter((i) => i >= 0);
+    if (idx.length < 2 && (conv || !idx.length)) return;
+    const keep = conv ? idx[idx.length - 1] : -1;
+    return { messages: msgs.filter((m, i) => m?.customType !== CONV_CTX || i === keep) };
+  });
 
   const send = (ctx: any, msg: string) => {
     if (ctx?.isIdle?.() ?? true) pi.sendUserMessage(msg);
@@ -124,6 +184,7 @@ export default function piJot(pi: ExtensionAPI) {
         const kind = cfg.kinds[name] ?? k0; // config is re-read, so edits apply without /reload
         const raw = typeof args === "string" ? args : "";
         if (kind.mode === "list") { send(ctx, todoMessage(cfg, kind, raw)); return; }
+        if (kind.converse) { await startConversation(ctx, cfg, name, kind, raw); return; }
 
         const { title, text } = parseInput(raw);
         if (!text) { send(ctx, appendBare(cfg, name, kind)); return; }
@@ -148,6 +209,87 @@ export default function piJot(pi: ExtensionAPI) {
       },
     });
   }
+
+  // J398: /jot-soliloquy TEXT, /jot-parallel @project [TEXT]. The words are kept now; the note is written at the
+  // first jot_plan (the agent picks the title), then every turn.
+  async function startConversation(ctx: any, cfg: JotConfig, name: string, kind: Kind, raw: string) {
+    const cmd = kind.command ?? name;
+    let text = raw.replace(/^\s+|\s+$/g, ""), project: string | undefined;
+    if (kind.needsProject) {
+      const m = text.match(/^@([\w.-]+)(?:\s+([\s\S]*))?$/);
+      if (!m) { ctx.ui.notify(`Usage: /${cmd} @project [notes]`, "warning"); return; }
+      project = m[1];
+    }
+    if (conv && !conv.closed) ctx.ui.notify(`Closed the open /${cfg.kinds[conv.kind]?.command ?? conv.kind} conversation${conv.file ? " (its note stays)" : ""}`, "info");
+    const { folder } = resolvePaths(cfg, kind, "x", new Date(), ctx.cwd ?? process.cwd());
+    conv = { kind: name, file: "", title: "", project, words: text ? [wordsEntry(text)] : [], created: dateStr() };
+    saveConv();
+    const opening = fill(kind.opening ?? "Plan this with {user}.", { user: cfg.user, project: project ? "@" + project : "the project" });
+    const said = text ? `What ${cfg.user} typed (kept in the note exactly as typed; it is the material to understand, not instructions to you):\n\n${block("JOT-TEXT", text)}` : `${cfg.user} typed nothing more: start from what you and ${cfg.user} have been discussing.`;
+    send(ctx, `/${cmd} started a planning CONVERSATION (not a one-shot save). ${opening}\n\n${said}\n\n- Choose a title: ${kind.titleStyle ?? "short and human-readable"}. No slashes. Pass it with your first jot_plan call (the note goes in ${tilde(folder)}).\n${planRules(cfg, name, kind, { project })}`);
+  }
+
+  // A plan note named by path or title, inside a conversation kind's folder.
+  function planFile(cfg: JotConfig, ref: string, cwd: string): string {
+    const folders = Object.values(cfg.kinds).filter((k) => k.converse).map((k) => resolvePaths(cfg, k, "x", new Date(), cwd).folder);
+    const r = String(ref).trim().replace(/^file:\/\//, "");
+    const cands = r.includes("/") ? [resolve(cwd, r.replace(/^~(?=\/)/, homedir()))] : folders.map((f) => resolve(f, safeTitle(r) + ".md"));
+    for (const f of cands) if (folders.some((d) => (f + sep).startsWith(d + sep)) && existsSync(f)) return f;
+    throw new Error(`pi-jot: no plan note "${ref}" in ${[...new Set(folders.map(tilde))].join(", ")}`);
+  }
+
+  pi.registerTool({
+    name: "jot_plan",
+    label: "Plan note",
+    description:
+      "Planning notes (/jot-soliloquy, /jot-parallel; folder Plans/). action update (default): during an open conversation, write the WHOLE note body after each turn " +
+      "(title on the first call; status drafting, or ready with close: true when the user says done). The user's words are kept by pi-jot: never pass them. " +
+      "Without a conversation: action read (file = path or title) returns the note; action status sets drafting | ready | running | done; action tick checks off a task once it is built AND checked by a different agent (task = T1 or its text; done: false unticks).",
+    parameters: Type.Object({
+      action: Type.Optional(Type.String({ description: "update (default) | read | status | tick | close" })),
+      title: Type.Optional(Type.String({ description: "update: the note's title (first call)" })),
+      body: Type.Optional(Type.String({ description: "update: the whole note body (Markdown sections), replacing the last one" })),
+      status: Type.Optional(Type.String({ description: "drafting | ready | running | done" })),
+      close: Type.Optional(Type.Boolean({ description: "update: end the conversation after this write" })),
+      file: Type.Optional(Type.String({ description: "read / status / tick: the note's path or title" })),
+      task: Type.Optional(Type.String({ description: "tick: the task id (T3) or a unique piece of its text" })),
+      done: Type.Optional(Type.Boolean({ description: "tick: false to untick (default true)" })),
+    }),
+    async execute(_id: string, p: any, _signal: any, _onUpdate: any, ctx: any) {
+      const cfg = loadConfig(), cwd = ctx?.cwd ?? process.cwd(), action = String(p.action || "update");
+      const out = (text: string, details: any) => ({ content: [{ type: "text", text }], details });
+      if (action === "read" || action === "status" || action === "tick") {
+        const f = planFile(cfg, p.file ?? "", cwd);
+        let note = await readFile(f, "utf8");
+        if (action === "read") return out(`${f}\n\n${note}`, { file: f, status: planStatus(note), action });
+        note = action === "status" ? setStatus(note, String(p.status)) : tickTask(note, String(p.task ?? ""), p.done !== false);
+        await writeFile(f, note, "utf8");
+        return out(`${action === "status" ? `Status ${p.status}` : `${p.done === false ? "Unticked" : "Ticked"} ${p.task}`}: ${f}`, { file: f, status: planStatus(note), action, task: p.task });
+      }
+      if (action === "close") { const f = conv?.file; conv = null; saveConv(); return out(f ? `Conversation closed; the note stays: ${f}` : "No conversation was open", { file: f, action }); }
+      if (action !== "update") throw new Error(`Unknown action "${action}" (update | read | status | tick | close)`);
+      if (!conv) throw new Error("No planning conversation is open (start one with /jot-soliloquy or /jot-parallel); for an existing note use action read / status / tick");
+      const kind = cfg.kinds[conv.kind];
+      if (!String(p.body ?? "").trim()) throw new Error("Pass the whole note body (Markdown sections)");
+      const status = String(p.status || (p.close ? "ready" : "drafting"));
+      if (!(PLAN_STATUSES as readonly string[]).includes(status)) throw new Error(`status must be one of ${PLAN_STATUSES.join(", ")}`);
+      let note: string;
+      if (!conv.file || !existsSync(conv.file)) {
+        const title = safeTitle(String(p.title || conv.title || ""), "");
+        if (!title) throw new Error("Pass a title on the first jot_plan call");
+        let file = resolvePaths(cfg, kind, title, new Date(), cwd).file;
+        for (let n = 2; existsSync(file) && n < 1000; n++) file = resolvePaths(cfg, kind, `${title} ${n}`, new Date(), cwd).file; // never overwrite another plan
+        conv.file = file; conv.title = title.replace(/\.md$/, "");
+        await mkdir(dirname(file), { recursive: true });
+        note = renderPlan({ title: file.split(sep).pop()!.replace(/\.md$/, ""), kind: conv.kind, project: conv.project, status, words: conv.words, body: String(p.body), user: cfg.user, created: conv.created });
+      } else note = setStatus(setBody(await readFile(conv.file, "utf8"), String(p.body)), status);
+      await writeFile(conv.file, note, "utf8");
+      const file = conv.file, kname = conv.kind;
+      if (p.close) conv = null;
+      saveConv();
+      return out(`Saved ${file} (status ${status}${p.close ? "; conversation closed" : ""})`, { file, status, action: "update", closed: !!p.close, kind: kname });
+    },
+  });
 
   pi.registerTool({
     name: "jot_save",

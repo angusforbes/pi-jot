@@ -78,3 +78,34 @@ describe("poem", () => {
     expect(s).toContain(poem + "\n");
   });
 });
+
+import { addWords, planStatus, renderPlan, setBody, setStatus, tickTask, wordsEntry } from "../src/core.ts";
+
+describe("plan notes (J398)", () => {
+  const d = new Date(2026, 9, 10, 9, 5);
+  const base = () => renderPlan({ title: "Garden tractor", kind: "soliloquy", status: "drafting", words: [wordsEntry("my idea: a $1 tractor\nsecond line, don't \"fix\" it", d)], body: "## Summary\nA tractor.", user: "Angus" }, d);
+  test("words verbatim, body and status replaceable", () => {
+    let n = base();
+    expect(n).toContain("my idea: a $1 tractor\n  second line, don't \"fix\" it");
+    expect(planStatus(n)).toBe("drafting");
+    n = addWords(n, "turn two: $& stays", d);
+    n = setBody(n, "## Summary\nA better tractor.\n\n## Open questions\n1. Size?");
+    n = setStatus(n, "ready");
+    expect(n).toContain("turn two: $& stays");
+    expect(n).toContain("A better tractor.");
+    expect(n).not.toContain("A tractor.");
+    expect(n.indexOf("my idea")).toBeLessThan(n.indexOf("turn two"));
+    expect(planStatus(n)).toBe("ready");
+    expect(() => setStatus(n, "finished")).toThrow();
+  });
+  test("tick by id or unique text, refuse ambiguous", () => {
+    let n = setBody(base(), "### Parallel tasks\n- [ ] T1 build the frame · tester: Sweep\n- [ ] T2 build the engine\n- [ ] T10 paint");
+    n = tickTask(n, "T1");
+    expect(n).toContain("- [x] T1 build the frame");
+    expect(n).toContain("- [ ] T10 paint");
+    n = tickTask(n, "engine");
+    expect(n).toContain("- [x] T2 build the engine");
+    expect(() => tickTask(n, "build")).toThrow(/matches 2/);
+    expect(tickTask(n, "T1", false)).toContain("- [ ] T1 build");
+  });
+});

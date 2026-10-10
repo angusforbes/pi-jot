@@ -38,6 +38,15 @@ export type Kind = {
   directed?: string;
   /** Never append to an existing file: pick "Title 2.md", "Title 3.md", … instead. */
   newFile?: boolean;
+  /** A planning CONVERSATION (J398, /jot-soliloquy, /jot-parallel): the note is written after the first turn and
+   *  rewritten after every turn (jot_plan); the user's words are kept verbatim in it, turn by turn. */
+  converse?: boolean;
+  /** converse: the first argument must be "@project" (e.g. /jot-parallel @workshop). */
+  needsProject?: boolean;
+  /** converse: what the first turn does ({user}, {project} allowed). */
+  opening?: string;
+  /** converse: what every turn's note body must contain (its sections), and how to run the turn. */
+  turn?: string;
   /** Optional external command instead of appending to the file: argv, entry on stdin,
    *  placeholders {file} {title} {kind}; env JOT_FILE, JOT_TITLE, JOT_KIND. */
   handler?: string[];
@@ -85,6 +94,29 @@ export const DEFAULTS: JotConfig = {
       description: "Write a poem into its own file (optional direction: topic, subject; bare /poem = from the conversation)",
       directed: "Write a short, original poem following {user}'s direction between the markers (topic, subject or anything else it asks for). Choose whatever style, form, rhythm and tone suit it unless the direction says otherwise. No need to force rhyme. Write it yourself; do not delegate.",
       bare: "Write a short, original poem inspired by what {user} and you have been discussing most recently. Choose whatever style, form, rhythm and tone suit it. Draw on specific images, questions or tensions from the conversation rather than summarising the task. No need to force rhyme. Write it yourself; do not delegate.",
+    },
+    soliloquy: {
+      mode: "append",
+      folder: "Plans",
+      file: "{title}.md",
+      title: "agent",
+      converse: true,
+      titleStyle: "short and human-readable, naming the project (e.g. \"Garden tractor\")",
+      description: "Think a project through out loud: your words kept exactly as typed, the agent summarises and asks numbered questions over as many turns as it needs; a plan note in Plans/ updated every turn (say \"done\" to finish)",
+      opening: "{user} is thinking a project through out loud (typed or dictated; dictation may have misheard words, read it generously). Understand the project: what it is, why, for whom, its shape, constraints and open choices.",
+      turn: "Each turn: (1) reply in chat with a short summary of the project as you now understand it, then as many numbered questions as you need (1., 2., 3.; mark a recommended option \"(recommended)\"). Number questions once for the whole conversation: an open question keeps its number every turn, answered ones drop off, a new one takes the next unused number. (2) Call jot_plan with the WHOLE note body, Markdown, these sections: ## Summary (the project as understood so far), ## Decisions so far (numbered, each with the turn it came from), ## Open questions (numbered, the same numbers as in chat), and ## Next (what would happen on a go). Keep going over as many turns as it takes until you understand the project.",
+    },
+    parallel: {
+      mode: "append",
+      folder: "Plans",
+      file: "{title}.md",
+      title: "agent",
+      converse: true,
+      needsProject: true,
+      titleStyle: "the project's name and 'parallel plan', e.g. \"workshop parallel plan\"",
+      description: "Plan the rest of a project as parallel tasks for several agents (/jot-parallel @project [notes]): what's done and left, then questions on priorities and design; a plan note in Plans/ updated every turn (say \"done\" to finish)",
+      opening: "{user} wants a plan for doing ALL the remaining work on {project} in parallel, as separate tasks for several agents. First find out what is done and what is left (its project card, history, repo). If you cannot read files yourself, or reading would take a while, hand the reading to a helper agent (spawn_agent) and do NOT wait for it: answer {user} at once with the plan as far as you can see it and your first questions; fold the helper's findings into the note when its report arrives.",
+      turn: "Each turn: (1) reply in chat with the plan as it stands in a few lines and numbered questions about whatever decides the split: priorities, the intended shape of the project, design choices, what must come first (1., 2., 3.; mark a recommended option \"(recommended)\"). Number questions once for the whole conversation: an open question keeps its number every turn, answered ones drop off, a new one takes the next unused number. (2) Call jot_plan with the WHOLE note body, Markdown, these sections: ## Project (what it is, one paragraph), ## Done so far, ## Left to do, ## Decisions so far (numbered), ## Open questions (numbered, as in chat), ## Plan, with ### Groundwork (shared work first, by one lead agent, who also creates the project card when the plan runs: checkbox lines T0, T0b in the task format below), ### Parallel tasks (one checkbox line each: \"- [ ] T1 <task> · agent: <who or new> · model: <model or complexity> · after: <task ids or none> · tester: <a DIFFERENT agent> · done when: <checks>\"), ### Order and dependencies, ### Integration and testing.",
     },
     todo: {
       mode: "list",
@@ -211,6 +243,67 @@ export async function writeEntry(cfg: JotConfig, kindName: string, kind: Kind, t
   } catch { /* new file */ }
   await appendFile(file, prefix + entry, "utf8");
   return file;
+}
+
+// ---- planning conversations (J398) ------------------------------------------------------------------------
+// A plan note: frontmatter (status drafting | ready | running | done), the user's words verbatim (kept by pi-jot,
+// never by the agent) between jot:words markers, then the agent's body between jot:body markers (replaced each turn).
+export const PLAN_STATUSES = ["drafting", "ready", "running", "done"] as const;
+const W0 = "<!-- jot:words -->", W1 = "<!-- /jot:words -->", B0 = "<!-- jot:body -->", B1 = "<!-- /jot:body -->";
+
+export function wordsEntry(text: string, d = new Date()): string {
+  const body = String(text).replace(/\r\n?/g, "\n").replace(/^\s+|\s+$/g, "");
+  return `- [${dateStr(d)} ${stamp(d)}] ${body.split("\n").join("\n  ")}\n`;
+}
+
+export function renderPlan(o: { title: string; kind: string; project?: string; status: string; words: string[]; body: string; user: string; created?: string }, d = new Date()): string {
+  const fm = ["---", `title: ${JSON.stringify(o.title)}`, `kind: ${o.kind}`, ...(o.project ? [`project: "@${o.project.replace(/^@/, "")}"`] : []),
+    `status: ${o.status}`, `created: ${o.created ?? dateStr(d)}`, `updated: ${dateStr(d)} ${stamp(d)}`, "tags:", "  - plan", "---"].join("\n");
+  return `${fm}\n# ${o.title}\n\n## ${o.user}'s words (exactly as typed)\n${W0}\n${o.words.join("")}${W1}\n\n${B0}\n${o.body.replace(/^\s+|\s+$/g, "")}\n${B1}\n`;
+}
+
+function between(s: string, a: string, b: string): [number, number] | null {
+  const i = s.indexOf(a), j = s.indexOf(b, i + a.length);
+  return i < 0 || j < 0 ? null : [i + a.length, j];
+}
+
+/** Append the user's words (verbatim) to a plan note's words section. */
+export function addWords(note: string, text: string, d = new Date()): string {
+  const r = between(note, W0, W1);
+  if (!r) throw new Error("pi-jot: not a plan note (no words section)");
+  return touch(note.slice(0, r[1]) + wordsEntry(text, d) + note.slice(r[1]), d);
+}
+
+/** Replace the agent's body. */
+export function setBody(note: string, body: string, d = new Date()): string {
+  const r = between(note, B0, B1);
+  if (!r) throw new Error("pi-jot: not a plan note (no body section)");
+  return touch(note.slice(0, r[0]) + "\n" + body.replace(/^\s+|\s+$/g, "") + "\n" + note.slice(r[1]), d);
+}
+
+export function setStatus(note: string, status: string, d = new Date()): string {
+  if (!(PLAN_STATUSES as readonly string[]).includes(status)) throw new Error(`pi-jot: status must be one of ${PLAN_STATUSES.join(", ")}`);
+  if (!/^status: .*$/m.test(note)) throw new Error("pi-jot: not a plan note (no status)");
+  return touch(note.replace(/^status: .*$/m, `status: ${status}`), d);
+}
+
+export const planStatus = (note: string) => note.match(/^status: (\S+)$/m)?.[1] ?? "";
+
+function touch(note: string, d: Date): string {
+  return note.replace(/^updated: .*$/m, `updated: ${dateStr(d)} ${stamp(d)}`);
+}
+
+/** Tick (or untick) one task checkbox: task = its id ("T3") or a unique piece of its text. */
+export function tickTask(note: string, task: string, done = true): string {
+  const t = String(task).trim();
+  if (!t) throw new Error("pi-jot: which task?");
+  const lines = note.split("\n");
+  const isBox = (l: string) => /^\s*- \[[ xX]\] /.test(l);
+  const byId = /^T\d+$/i.test(t) ? lines.map((l, i) => (isBox(l) && new RegExp(`^\\s*- \\[[ xX]\\] \\**${t}\\b`, "i").test(l) ? i : -1)).filter((i) => i >= 0) : [];
+  const hits = byId.length ? byId : lines.map((l, i) => (isBox(l) && l.toLowerCase().includes(t.toLowerCase()) ? i : -1)).filter((i) => i >= 0);
+  if (hits.length !== 1) throw new Error(hits.length ? `pi-jot: "${t}" matches ${hits.length} tasks; use its id (T1, T2, …)` : `pi-jot: no task "${t}" in the note`);
+  lines[hits[0]] = lines[hits[0]].replace(/- \[[ xX]\] /, done ? "- [x] " : "- [ ] ");
+  return lines.join("\n");
 }
 
 /** The marked sections a "discuss" kind appends after its entry. */
