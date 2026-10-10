@@ -120,3 +120,8 @@ describe("plan task ids (J398 review)", () => {
     expect(tickTask(n, "T0")).toContain("- [x] T0 card");
   });
 });
+
+test("an id never falls back to text (after: T9)", () => {
+  const n = setBody(renderPlan({ title: "x", kind: "parallel", status: "ready", words: [], body: "", user: "A" }), "- [ ] T1 build thing · after: T9");
+  expect(() => tickTask(n, "T9")).toThrow(/no task "T9"/);
+});

@@ -300,7 +300,7 @@ export function tickTask(note: string, task: string, done = true): string {
   const lines = note.split("\n");
   const isBox = (l: string) => /^\s*- \[[ xX]\] /.test(l);
   const byId = /^T\d+[a-z]?$/i.test(t) ? lines.map((l, i) => (isBox(l) && new RegExp(`^\\s*- \\[[ xX]\\] \\**${t}\\b`, "i").test(l) ? i : -1)).filter((i) => i >= 0) : [];
-  const hits = byId.length ? byId : lines.map((l, i) => (isBox(l) && l.toLowerCase().includes(t.toLowerCase()) ? i : -1)).filter((i) => i >= 0);
+  const hits = byId.length || /^T\d+[a-z]?$/i.test(t) ? byId : lines.map((l, i) => (isBox(l) && l.toLowerCase().includes(t.toLowerCase()) ? i : -1)).filter((i) => i >= 0);
   if (hits.length !== 1) throw new Error(hits.length ? `pi-jot: "${t}" matches ${hits.length} tasks; use its id (T1, T0b, …)` : `pi-jot: no task "${t}" in the note`);
   lines[hits[0]] = lines[hits[0]].replace(/- \[[ xX]\] /, done ? "- [x] " : "- [ ] ");
   return lines.join("\n");

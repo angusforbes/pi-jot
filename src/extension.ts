@@ -121,6 +121,10 @@ export default function piJot(pi: ExtensionAPI) {
   const pending = new Map<string, { kind: string; text: string; keep?: boolean }>();
   let seq = 0;
   let conv: Conv | null = null; // J398: the open planning conversation, if any
+  // Every change to a plan note goes through one queue: words arriving together (several /jot-said, a turn's
+  // jot_plan) must never read-modify-write over each other (PlanCheck's race).
+  let chain: Promise<unknown> = Promise.resolve();
+  const serial = <T>(fn: () => Promise<T>): Promise<T> => { const r = chain.then(fn, fn); chain = r.catch(() => {}); return r; };
   const saveConv = () => { try { pi.appendEntry(CONV_ENTRY, conv ?? { closed: true }); } catch { /* no session */ } };
   pi.on("session_start", async (_e: any, ctx: any) => {
     conv = null;
@@ -130,13 +134,13 @@ export default function piJot(pi: ExtensionAPI) {
     } catch { /* no session entries */ }
   });
   // The user's words go into the open note verbatim (to the words section; before the note exists, into conv.words).
-  const keepWords = async (text: string) => {
+  const keepWords = (text: string) => serial(async () => {
     if (!conv || !String(text).trim()) return false;
     if (conv.file && existsSync(conv.file)) await writeFile(conv.file, addWords(await readFile(conv.file, "utf8"), text), "utf8");
     else conv.words.push(wordsEntry(text));
     saveConv();
     return true;
-  };
+  });
   // Agent windows: what the user typed (not commands, not messages other extensions send).
   pi.on("input", async (event: any) => {
     if (conv && event.source === "interactive" && typeof event.text === "string" && !event.text.trimStart().startsWith("/")) {
@@ -256,7 +260,10 @@ export default function piJot(pi: ExtensionAPI) {
       task: Type.Optional(Type.String({ description: "tick: the task id (T3) or a unique piece of its text" })),
       done: Type.Optional(Type.Boolean({ description: "tick: false to untick (default true)" })),
     }),
-    async execute(_id: string, p: any, _signal: any, _onUpdate: any, ctx: any) {
+    execute(_id: string, p: any, _signal: any, _onUpdate: any, ctx: any) { return serial(() => planTool(p, ctx)); },
+  });
+
+  async function planTool(p: any, ctx: any) {
       const cfg = loadConfig(), cwd = ctx?.cwd ?? process.cwd(), action = String(p.action || "update");
       const out = (text: string, details: any) => ({ content: [{ type: "text", text }], details });
       if (action === "read" || action === "status" || action === "tick") {
@@ -289,8 +296,7 @@ export default function piJot(pi: ExtensionAPI) {
       if (p.close) conv = null;
       saveConv();
       return out(`Saved ${file} (status ${status}${p.close ? "; conversation closed" : ""})`, { file, status, action: "update", closed: !!p.close, kind: kname });
-    },
-  });
+  }
 
   pi.registerTool({
     name: "jot_save",
