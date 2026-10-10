@@ -138,3 +138,22 @@ describe("stable question numbers (J252)", () => {
     expect(checkQuestionNumbers(new Map([[2, "Where in Obsidian should the digest go?"]]), 3, openQuestions("## Open questions\n1. What colour scheme do you like?\n2. Where in Obsidian should the digest go?"))).toMatch(/number 1 was already used/));
   test("bold numbers parse", () => expect(openQuestions("## Open questions\n**1.** Size?\n**2.** Colour?").get(2)).toBe("Colour?"));
 });
+
+import { dupes } from "../src/core.ts";
+describe("stable question numbers, NumCheck's cases", () => {
+  const prev = new Map([[1, "Should the library lend power tools?"], [2, "Should the library lend garden tools?"], [3, "Who runs the sign-up desk on weekends?"]]);
+  test("kept question moved to a fresh number: refused", () =>
+    expect(checkQuestionNumbers(prev, 3, new Map([[1, "Should the library lend power tools?"], [4, "Should the library lend garden tools?"]]))).toMatch(/question 4 is your earlier question 2/));
+  test("two similar questions swapped: refused", () =>
+    expect(checkQuestionNumbers(prev, 3, new Map([[1, "Should the library lend garden tools?"], [2, "Should the library lend power tools?"]]))).toMatch(/earlier question 2/));
+  test("an unrelated new question on a still-open number: refused", () =>
+    expect(checkQuestionNumbers(prev, 3, new Map([[3, "What colour should the logo be?"]]))).toMatch(/question 3 was/));
+  test("lightly reworded kept question: ok", () =>
+    expect(checkQuestionNumbers(prev, 3, new Map([[2, "Should the library also lend garden tools, like rakes?"], [3, "Who runs the sign-up desk on weekends and holidays?"]]))).toBeNull());
+  test("heading in any case, and duplicates found", () => {
+    const q = openQuestions("## Open Questions\n2. A?\n2. B?\n3. C?");
+    expect([...q.keys()]).toEqual([2, 3]); expect([...dupes]).toEqual([2]);
+    expect(checkQuestionNumbers(new Map(), 0, q, [...dupes])).toMatch(/two questions are numbered 2/);
+  });
+  test("(none) section: ok", () => expect(checkQuestionNumbers(prev, 3, openQuestions("## Open questions\n(none)"))).toBeNull());
+});

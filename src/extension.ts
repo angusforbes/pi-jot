@@ -7,7 +7,7 @@ import { Type } from "typebox";
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync, realpathSync } from "node:fs";
 import { dirname, resolve, sep } from "node:path";
-import { addWords, checkQuestionNumbers, dateStr, discussSections, openQuestions, fill, type JotConfig, type Kind, loadConfig, parseInput, PLAN_STATUSES, planStatus, renderPlan, resolvePaths, safeTitle, setBody, setStatus, tickTask, titleFrom, wordsEntry, writeEntry } from "./core.ts";
+import { addWords, checkQuestionNumbers, dateStr, dupes, discussSections, openQuestions, fill, type JotConfig, type Kind, loadConfig, parseInput, PLAN_STATUSES, planStatus, renderPlan, resolvePaths, safeTitle, setBody, setStatus, tickTask, titleFrom, wordsEntry, writeEntry } from "./core.ts";
 
 // J398: an open planning conversation (/jot-soliloquy, /jot-parallel) in this session. Persisted with
 // pi.appendEntry so it survives a restart or /reload of the same session.
@@ -282,7 +282,7 @@ export default function piJot(pi: ExtensionAPI) {
       const kind = cfg.kinds[conv.kind];
       if (!String(p.body ?? "").trim()) throw new Error("Pass the whole note body (Markdown sections)");
       const qs = openQuestions(String(p.body)); // J252: the same numbers in follow-ups
-      const qErr = checkQuestionNumbers(new Map(conv.qs ?? []), conv.maxQ ?? 0, qs);
+      const qErr = checkQuestionNumbers(new Map(conv.qs ?? []), conv.maxQ ?? 0, qs, [...dupes]);
       if (qErr) throw new Error(qErr);
       const status = String(p.status || (p.close ? "ready" : "drafting"));
       if (!(PLAN_STATUSES as readonly string[]).includes(status)) throw new Error(`status must be one of ${PLAN_STATUSES.join(", ")}`);

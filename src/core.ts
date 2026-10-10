@@ -317,18 +317,22 @@ export function discussSections(who: string, summary: string, discussion: string
 
 // ---- stable question numbers (J252: keep the same numbers in follow-ups) ------------------------------------
 /** The numbered items of a body's "## Open questions" section: number -> text. */
+export const dupes = new Set<number>(); // numbers listed twice by the last openQuestions() call
 export function openQuestions(body: string): Map<number, string> {
-  const out = new Map<number, string>();
-  const m = String(body).match(/^##\s+Open questions[^\n]*\n([\s\S]*?)(?=^##\s|(?![\s\S]))/m);
+  const out = new Map<number, string>(); dupes.clear();
+  const m = String(body).match(/^##\s+Open questions[^\n]*\n([\s\S]*?)(?=^##\s|(?![\s\S]))/im);
   if (!m) return out;
   for (const line of m[1].split("\n")) {
     const q = line.match(/^\s*(?:\*\*)?(\d+)[.)](?:\*\*)?\s+(.+)$/);
-    if (q && !out.has(Number(q[1]))) out.set(Number(q[1]), q[2].trim());
+    if (!q) continue;
+    const n = Number(q[1]);
+    if (out.has(n)) dupes.add(n); else out.set(n, q[2].trim());
   }
   return out;
 }
 
-const words = (s: string) => new Set(s.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ").split(/\s+/).filter((w) => w.length > 2));
+const STOP = new Set("the and for are you your yours should would could will can does did what which who whom whose when where why how this that these those with from into about also any all its it's than then there their they them was were has have had not but our out one".split(" "));
+const words = (s: string) => new Set(s.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ").split(/\s+/).filter((w) => w.length > 2 && !STOP.has(w)));
 function similar(a: string, b: string): number {
   const A = words(a), B = words(b);
   if (!A.size || !B.size) return 0;
@@ -339,19 +343,20 @@ function similar(a: string, b: string): number {
 /** null when the new open questions keep their numbers: a number still listed must be the same question, an
  *  answered one is never reused, a new question takes a number above every one used so far (maxUsed). Else
  *  a sentence saying what to fix. */
-export function checkQuestionNumbers(prev: Map<number, string>, maxUsed: number, next: Map<number, string>): string | null {
-  const problems: string[] = [];
+export function checkQuestionNumbers(prev: Map<number, string>, maxUsed: number, next: Map<number, string>, twice: Iterable<number> = []): string | null {
+  const problems: string[] = [...twice].map((n) => `two questions are numbered ${n}`);
+  // the earlier question this text is (best match, clearly the same), or null
+  const earlier = (text: string): number | null => {
+    let best: number | null = null, bs = 0;
+    for (const [m, t] of prev) { const v = similar(t, text); if (v > bs) { bs = v; best = m; } }
+    return bs >= 0.5 ? best : null;
+  };
   for (const [n, text] of next) {
+    const m = earlier(text);
+    if (m != null && m !== n && !(prev.has(n) && similar(prev.get(n)!, text) >= similar(prev.get(m)!, text))) { problems.push(`question ${n} is your earlier question ${m}: keep it as ${m}`); continue; }
     if (prev.has(n)) {
-      const same = similar(prev.get(n)!, text);
-      if (same >= 0.34) continue;
-      const moved = [...prev].find(([m, t]) => m !== n && similar(t, text) >= 0.5);
-      if (moved) problems.push(`question ${n} is your earlier question ${moved[0]}: keep it as ${moved[0]}`);
-      else if (same < 0.15) problems.push(`question ${n} was "${prev.get(n)!.slice(0, 60)}"; a different question needs a new number above ${maxUsed}`);
-    } else if (n <= maxUsed) {
-      const moved = [...prev].find(([, t]) => similar(t, text) >= 0.5);
-      problems.push(moved ? `question ${n} is your earlier question ${moved[0]}: keep it as ${moved[0]}` : `number ${n} was already used for an earlier question: a new question takes ${maxUsed + 1} or higher`);
-    }
+      if (similar(prev.get(n)!, text) < 0.15 && m == null) problems.push(`question ${n} was "${prev.get(n)!.slice(0, 60)}"; a different question needs a new number above ${maxUsed}`);
+    } else if (n <= maxUsed && m == null) problems.push(`number ${n} was already used for an earlier question: a new question takes ${maxUsed + 1} or higher`);
   }
   return problems.length ? `Keep the question numbers (J252: the same numbers in follow-ups): ${problems.join("; ")}. Fix the numbers in the body (and say them that way in chat), then call jot_plan again.` : null;
 }
