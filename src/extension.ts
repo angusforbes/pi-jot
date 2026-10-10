@@ -7,11 +7,11 @@ import { Type } from "typebox";
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync, realpathSync } from "node:fs";
 import { dirname, resolve, sep } from "node:path";
-import { addWords, dateStr, discussSections, fill, type JotConfig, type Kind, loadConfig, parseInput, PLAN_STATUSES, planStatus, renderPlan, resolvePaths, safeTitle, setBody, setStatus, tickTask, titleFrom, wordsEntry, writeEntry } from "./core.ts";
+import { addWords, checkQuestionNumbers, dateStr, discussSections, openQuestions, fill, type JotConfig, type Kind, loadConfig, parseInput, PLAN_STATUSES, planStatus, renderPlan, resolvePaths, safeTitle, setBody, setStatus, tickTask, titleFrom, wordsEntry, writeEntry } from "./core.ts";
 
 // J398: an open planning conversation (/jot-soliloquy, /jot-parallel) in this session. Persisted with
 // pi.appendEntry so it survives a restart or /reload of the same session.
-type Conv = { kind: string; file: string; title: string; project?: string; words: string[]; created: string; closed?: boolean };
+type Conv = { kind: string; file: string; title: string; project?: string; words: string[]; created: string; closed?: boolean; qs?: [number, string][]; maxQ?: number };
 const CONV_ENTRY = "pi-jot-conversation";
 const CONV_CTX = "pi-jot-plan-turn";
 
@@ -160,7 +160,7 @@ export default function piJot(pi: ExtensionAPI) {
     if (!conv) return;
     let cfg: JotConfig; try { cfg = loadConfig(); } catch { return; }
     const kind = cfg.kinds[conv.kind]; if (!kind) return;
-    return { message: { customType: CONV_CTX, display: false, content: `[/${kind.command ?? conv.kind} conversation open${conv.project ? ` about @${conv.project}` : ""}: "${conv.title || "(untitled yet)"}"]\n${planRules(cfg, conv.kind, kind, conv)}` } };
+    return { message: { customType: CONV_CTX, display: false, content: `[/${kind.command ?? conv.kind} conversation open${conv.project ? ` about @${conv.project}` : ""}: "${conv.title || "(untitled yet)"}"]\n${planRules(cfg, conv.kind, kind, conv)}${conv.qs?.length ? `\n- Open questions as numbered last turn (J252: keep these numbers in chat and in the note; an answered one drops off and its number is never reused; a new question takes ${(conv.maxQ ?? 0) + 1} or higher):\n${conv.qs.map(([n, t]) => `  ${n}. ${t}`).join("\n")}` : conv.maxQ ? `\n- Question numbers used so far go up to ${conv.maxQ}: a new question takes ${conv.maxQ + 1} or higher.` : ""}` } };
   });
   pi.on("context", async (event: any) => {
     const msgs = event.messages as any[];
@@ -281,6 +281,9 @@ export default function piJot(pi: ExtensionAPI) {
       if (!conv) throw new Error("No planning conversation is open (start one with /jot-soliloquy or /jot-parallel); for an existing note use action read / status / tick");
       const kind = cfg.kinds[conv.kind];
       if (!String(p.body ?? "").trim()) throw new Error("Pass the whole note body (Markdown sections)");
+      const qs = openQuestions(String(p.body)); // J252: the same numbers in follow-ups
+      const qErr = checkQuestionNumbers(new Map(conv.qs ?? []), conv.maxQ ?? 0, qs);
+      if (qErr) throw new Error(qErr);
       const status = String(p.status || (p.close ? "ready" : "drafting"));
       if (!(PLAN_STATUSES as readonly string[]).includes(status)) throw new Error(`status must be one of ${PLAN_STATUSES.join(", ")}`);
       let note: string;
@@ -294,6 +297,7 @@ export default function piJot(pi: ExtensionAPI) {
         note = renderPlan({ title: file.split(sep).pop()!.replace(/\.md$/, ""), kind: conv.kind, project: conv.project, status, words: conv.words, body: String(p.body), user: cfg.user, created: conv.created });
       } else note = setStatus(setBody(await readFile(conv.file, "utf8"), String(p.body)), status);
       await writeFile(conv.file, note, "utf8");
+      conv.qs = [...qs]; conv.maxQ = Math.max(conv.maxQ ?? 0, ...qs.keys());
       const file = conv.file, kname = conv.kind;
       if (p.close) conv = null;
       saveConv();

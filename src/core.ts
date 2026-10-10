@@ -104,7 +104,7 @@ export const DEFAULTS: JotConfig = {
       titleStyle: "short and human-readable, naming the project (e.g. \"Garden tractor\")",
       description: "Think a project through out loud: your words kept exactly as typed, the agent summarises and asks numbered questions over as many turns as it needs; a plan note in Plans/ updated every turn (say \"done\" to finish)",
       opening: "{user} is thinking a project through out loud (typed or dictated; dictation may have misheard words, read it generously). Understand the project: what it is, why, for whom, its shape, constraints and open choices.",
-      turn: "Each turn: (1) reply in chat with a short summary of the project as you now understand it, then as many numbered questions as you need (1., 2., 3.; mark a recommended option \"(recommended)\"). Number questions once for the whole conversation: an open question keeps its number every turn, answered ones drop off, a new one takes the next unused number. (2) Call jot_plan with the WHOLE note body, Markdown, these sections: ## Summary (the project as understood so far), ## Decisions so far (numbered, each with the turn it came from), ## Open questions (numbered, the same numbers as in chat), and ## Next (what would happen on a go). Keep going over as many turns as it takes until you understand the project.",
+      turn: "Each turn, write the note first, then reply: (1) your chat reply has a short summary of the project as you now understand it, then as many numbered questions as you need (1., 2., 3.; mark a recommended option \"(recommended)\"). Number questions once for the whole conversation: an open question keeps its number every turn, answered ones drop off, a new one takes the next unused number. (2) BEFORE that reply, call jot_plan with the WHOLE note body (pi-jot checks that the question numbers are kept; if it refuses, fix them and call it again), then reply with the same summary and numbers. The body has these Markdown sections: ## Summary (the project as understood so far), ## Decisions so far (numbered, each with the turn it came from), ## Open questions (numbered, the same numbers as in chat), and ## Next (what would happen on a go). Keep going over as many turns as it takes until you understand the project.",
     },
     parallel: {
       mode: "append",
@@ -116,7 +116,7 @@ export const DEFAULTS: JotConfig = {
       titleStyle: "the project's name and 'parallel plan', e.g. \"workshop parallel plan\"",
       description: "Plan the rest of a project as parallel tasks for several agents (/jot-parallel @project [notes]): what's done and left, then questions on priorities and design; a plan note in Plans/ updated every turn (say \"done\" to finish)",
       opening: "{user} wants a plan for doing ALL the remaining work on {project} in parallel, as separate tasks for several agents. First, right now, read {project}'s own project card (in hyprpi: the world tool shows the board, or board_read): its title, where things stand, next step and items say what the project IS. Never infer its purpose from its name or from earlier work in this session; what you can't tell yet, say you don't know yet. Then find out what is done and what is left in detail (its history, repo). If you cannot read files yourself, or reading would take a while, hand the reading to a helper agent (spawn_agent) and do NOT wait for it: answer {user} at once with the plan as far as you can see it and your first questions; fold the helper's findings into the note when its report arrives.",
-      turn: "Each turn: (1) reply in chat with the plan as it stands in a few lines and numbered questions about whatever decides the split: priorities, the intended shape of the project, design choices, what must come first (1., 2., 3.; mark a recommended option \"(recommended)\"). Number questions once for the whole conversation: an open question keeps its number every turn, answered ones drop off, a new one takes the next unused number. (2) Call jot_plan with the WHOLE note body, Markdown, these sections: ## Project (what it is, one paragraph), ## Done so far, ## Left to do, ## Decisions so far (numbered), ## Open questions (numbered, as in chat), ## Plan, with ### Groundwork (shared work first, by one lead agent, who also creates the project card when the plan runs: checkbox lines T0, T0b in the task format below), ### Parallel tasks (one checkbox line each: \"- [ ] T1 <task> · agent: <who or new> · model: <model or complexity> · after: <task ids or none> · tester: <a DIFFERENT agent> · done when: <checks>\"), ### Order and dependencies, ### Integration and testing. Every turn, the first one too (before a helper has reported), the Groundwork and Parallel tasks sections hold real checkbox lines in that full format, never placeholders: when you know little yet, write your best provisional tasks marked \"(provisional)\" and refine them as you learn more.",
+      turn: "Each turn, write the note first, then reply: (1) your chat reply has the plan as it stands in a few lines and numbered questions about whatever decides the split: priorities, the intended shape of the project, design choices, what must come first (1., 2., 3.; mark a recommended option \"(recommended)\"). Number questions once for the whole conversation: an open question keeps its number every turn, answered ones drop off, a new one takes the next unused number. (2) BEFORE that reply, call jot_plan with the WHOLE note body (pi-jot checks that the question numbers are kept; if it refuses, fix them and call it again), then reply with the same summary and numbers. The body has these Markdown sections: ## Project (what it is, one paragraph), ## Done so far, ## Left to do, ## Decisions so far (numbered), ## Open questions (numbered, as in chat), ## Plan, with ### Groundwork (shared work first, by one lead agent, who also creates the project card when the plan runs: checkbox lines T0, T0b in the task format below), ### Parallel tasks (one checkbox line each: \"- [ ] T1 <task> · agent: <who or new> · model: <model or complexity> · after: <task ids or none> · tester: <a DIFFERENT agent> · done when: <checks>\"), ### Order and dependencies, ### Integration and testing. Every turn, the first one too (before a helper has reported), the Groundwork and Parallel tasks sections hold real checkbox lines in that full format, never placeholders: when you know little yet, write your best provisional tasks marked \"(provisional)\" and refine them as you learn more.",
     },
     todo: {
       mode: "list",
@@ -313,4 +313,45 @@ export function discussSections(who: string, summary: string, discussion: string
   if (sum) out.push(`## Summary (${who})\n${sum}`);
   if (dis) out.push(`## Discussion so far (${who}, ${day})\n${dis}`);
   return out.length ? `\n${out.join("\n\n")}\n` : "";
+}
+
+// ---- stable question numbers (J252: keep the same numbers in follow-ups) ------------------------------------
+/** The numbered items of a body's "## Open questions" section: number -> text. */
+export function openQuestions(body: string): Map<number, string> {
+  const out = new Map<number, string>();
+  const m = String(body).match(/^##\s+Open questions[^\n]*\n([\s\S]*?)(?=^##\s|(?![\s\S]))/m);
+  if (!m) return out;
+  for (const line of m[1].split("\n")) {
+    const q = line.match(/^\s*(?:\*\*)?(\d+)[.)](?:\*\*)?\s+(.+)$/);
+    if (q && !out.has(Number(q[1]))) out.set(Number(q[1]), q[2].trim());
+  }
+  return out;
+}
+
+const words = (s: string) => new Set(s.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ").split(/\s+/).filter((w) => w.length > 2));
+function similar(a: string, b: string): number {
+  const A = words(a), B = words(b);
+  if (!A.size || !B.size) return 0;
+  let n = 0; for (const w of A) if (B.has(w)) n++;
+  return n / Math.min(A.size, B.size);
+}
+
+/** null when the new open questions keep their numbers: a number still listed must be the same question, an
+ *  answered one is never reused, a new question takes a number above every one used so far (maxUsed). Else
+ *  a sentence saying what to fix. */
+export function checkQuestionNumbers(prev: Map<number, string>, maxUsed: number, next: Map<number, string>): string | null {
+  const problems: string[] = [];
+  for (const [n, text] of next) {
+    if (prev.has(n)) {
+      const same = similar(prev.get(n)!, text);
+      if (same >= 0.34) continue;
+      const moved = [...prev].find(([m, t]) => m !== n && similar(t, text) >= 0.5);
+      if (moved) problems.push(`question ${n} is your earlier question ${moved[0]}: keep it as ${moved[0]}`);
+      else if (same < 0.15) problems.push(`question ${n} was "${prev.get(n)!.slice(0, 60)}"; a different question needs a new number above ${maxUsed}`);
+    } else if (n <= maxUsed) {
+      const moved = [...prev].find(([, t]) => similar(t, text) >= 0.5);
+      problems.push(moved ? `question ${n} is your earlier question ${moved[0]}: keep it as ${moved[0]}` : `number ${n} was already used for an earlier question: a new question takes ${maxUsed + 1} or higher`);
+    }
+  }
+  return problems.length ? `Keep the question numbers (J252: the same numbers in follow-ups): ${problems.join("; ")}. Fix the numbers in the body (and say them that way in chat), then call jot_plan again.` : null;
 }

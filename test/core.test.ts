@@ -125,3 +125,16 @@ test("an id never falls back to text (after: T9)", () => {
   const n = setBody(renderPlan({ title: "x", kind: "parallel", status: "ready", words: [], body: "", user: "A" }), "- [ ] T1 build thing · after: T9");
   expect(() => tickTask(n, "T9")).toThrow(/no task "T9"/);
 });
+
+import { checkQuestionNumbers, openQuestions } from "../src/core.ts";
+describe("stable question numbers (J252)", () => {
+  const prev = openQuestions("## Summary\nx\n\n## Open questions\n1. Which Whisper implementation should it use?\n2. Where in Obsidian should the digest go?\n3. Should it track processed memos?\n\n## Next\ny");
+  test("parses the section only", () => expect([...prev.keys()]).toEqual([1, 2, 3]));
+  test("answered one dropped, same numbers kept, new one above: ok", () =>
+    expect(checkQuestionNumbers(prev, 3, openQuestions("## Open questions\n2. Where in Obsidian should the digest go, and what file name?\n3. Should it track processed memos?\n4. How long may a memo be?"))).toBeNull());
+  test("renumbered after an answer: refused", () =>
+    expect(checkQuestionNumbers(prev, 3, openQuestions("## Open questions\n1. Where in Obsidian should the digest go?\n2. Should it track processed memos?"))).toMatch(/question 1 is your earlier question 2/));
+  test("a retired number reused for a new question: refused", () =>
+    expect(checkQuestionNumbers(new Map([[2, "Where in Obsidian should the digest go?"]]), 3, openQuestions("## Open questions\n1. What colour scheme do you like?\n2. Where in Obsidian should the digest go?"))).toMatch(/number 1 was already used/));
+  test("bold numbers parse", () => expect(openQuestions("## Open questions\n**1.** Size?\n**2.** Colour?").get(2)).toBe("Colour?"));
+});
