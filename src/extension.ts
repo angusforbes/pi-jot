@@ -134,13 +134,14 @@ export default function piJot(pi: ExtensionAPI) {
     } catch { /* no session entries */ }
   });
   // The user's words go into the open note verbatim (to the words section; before the note exists, into conv.words).
-  const keepWords = (text: string) => serial(async () => {
-    if (!conv || !String(text).trim()) return false;
-    if (conv.file && existsSync(conv.file)) await writeFile(conv.file, addWords(await readFile(conv.file, "utf8"), text), "utf8");
-    else conv.words.push(wordsEntry(text));
-    saveConv();
+  // Words belong to the conversation open when they ARRIVED (captured now), even if another starts before the write.
+  const keepWords = (text: string) => { const c = conv, at = new Date(); return serial(async () => {
+    if (!c || !String(text).trim()) return false;
+    if (c.file && existsSync(c.file)) await writeFile(c.file, addWords(await readFile(c.file, "utf8"), text, at), "utf8");
+    else c.words.push(wordsEntry(text, at));
+    if (c === conv) saveConv();
     return true;
-  });
+  }); };
   // Agent windows: what the user typed (not commands, not messages other extensions send).
   pi.on("input", async (event: any) => {
     if (conv && event.source === "interactive" && typeof event.text === "string" && !event.text.trimStart().startsWith("/")) {
@@ -224,6 +225,7 @@ export default function piJot(pi: ExtensionAPI) {
       if (!m) { ctx.ui.notify(`Usage: /${cmd} @project [notes]`, "warning"); return; }
       project = m[1];
     }
+    await serial(async () => {}); // let words already queued for the open conversation land in its note first
     if (conv && !conv.closed) ctx.ui.notify(`Closed the open /${cfg.kinds[conv.kind]?.command ?? conv.kind} conversation${conv.file ? " (its note stays)" : ""}`, "info");
     const { folder } = resolvePaths(cfg, kind, "x", new Date(), ctx.cwd ?? process.cwd());
     conv = { kind: name, file: "", title: "", project, words: text ? [wordsEntry(text)] : [], created: dateStr() };
