@@ -333,8 +333,11 @@ export function openQuestions(body: string): Map<number, string> {
 
 const STOP = new Set("the and for are you your yours should would could will can does did what which who whom whose when where why how this that these those with from into about also any all its it's than then there their they them was were has have had not but our out one".split(" "));
 const words = (s: string) => new Set(s.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ").split(/\s+/).filter((w) => w.length > 2 && !STOP.has(w)));
+const norm = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
 function similar(a: string, b: string): number {
-  const A = words(a), B = words(b);
+  if (norm(a) === norm(b)) return 1; // unchanged, however short ("UI?")
+  let A = words(a), B = words(b);
+  if (!A.size || !B.size) { const all = (x: string) => new Set(norm(x).split(" ").filter(Boolean)); A = all(a); B = all(b); } // short questions: every word counts
   if (!A.size || !B.size) return 0;
   let n = 0; for (const w of A) if (B.has(w)) n++;
   return n / Math.min(A.size, B.size);

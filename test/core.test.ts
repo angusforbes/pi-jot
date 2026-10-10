@@ -157,3 +157,7 @@ describe("stable question numbers, NumCheck's cases", () => {
   });
   test("(none) section: ok", () => expect(checkQuestionNumbers(prev, 3, openQuestions("## Open questions\n(none)"))).toBeNull());
 });
+test("an unchanged short question keeps its number (NumCheck)", () => {
+  expect(checkQuestionNumbers(new Map([[2, "UI?"]]), 2, openQuestions("## Open questions\n2. UI?\n"))).toBeNull();
+  expect(checkQuestionNumbers(new Map([[2, "UI?"]]), 2, openQuestions("## Open questions\n2. DB?\n"))).toMatch(/question 2 was/);
+});
