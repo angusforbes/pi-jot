@@ -2,7 +2,7 @@
 // No Pi imports here, so it can be tested with plain `bun test`.
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { appendFile, mkdir, readFile } from "node:fs/promises";
+import { io } from "./io.ts";
 import { homedir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 
@@ -215,11 +215,13 @@ export function resolvePaths(cfg: JotConfig, kind: Kind, title: string, d = new 
 }
 
 /** Append the entry (or hand it to the kind's handler). Returns the file path. */
-export async function writeEntry(cfg: JotConfig, kindName: string, kind: Kind, text: string, title: string, cwd = process.cwd(), extra: Record<string, string> = {}): Promise<string> {
+export async function writeEntry(cfg: JotConfig, kindName: string, kind: Kind, text: string, title: string, cwd = process.cwd(), extra: Record<string, string> = {}, tail = ""): Promise<string> {
   const d = new Date();
+  const fs = io(jotRoot(cfg, cwd)); // (J559: local, or relayed to the laptop window)
   let { file } = resolvePaths(cfg, kind, title, d, cwd);
+  if (fs.relay && (kind.root || kind.handler?.length)) throw new Error(`pi-jot: the ${kindName} kind has its own root or a handler, which can't be relayed to the laptop`);
   if (kind.newFile) {
-    for (let n = 2; existsSync(file) && n < 1000; n++) file = resolvePaths(cfg, kind, `${safeTitle(title)} ${n}`, d, cwd).file;
+    for (let n = 2; (await fs.exists(file)) && n < 1000; n++) file = resolvePaths(cfg, kind, `${safeTitle(title)} ${n}`, d, cwd).file;
   }
   const entry = renderEntry(kind, text, safeTitle(title), d, extra);
   if (kind.handler?.length) {
@@ -235,14 +237,18 @@ export async function writeEntry(cfg: JotConfig, kindName: string, kind: Kind, t
     });
     return file;
   }
-  await mkdir(dirname(file), { recursive: true });
+  await fs.mkdirp(dirname(file));
   let prefix = "";
-  try {
-    const cur = await readFile(file, "utf8");
+  if (await fs.exists(file)) {
+    const cur = await fs.read(file);
     if (cur.length && !cur.endsWith("\n")) prefix = "\n";
-  } catch { /* new file */ }
-  await appendFile(file, prefix + entry, "utf8");
-  return file;
+  }
+  return fs.append(file, prefix + entry + (tail || ""));
+}
+
+/** The jot root as an absolute path (kinds without their own root live under it). */
+export function jotRoot(cfg: JotConfig, cwd = process.cwd()): string {
+  return cfg.root === "." ? cwd : resolve(cwd, expandHome(cfg.root));
 }
 
 // ---- planning conversations (J398) ------------------------------------------------------------------------
