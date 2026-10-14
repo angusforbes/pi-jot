@@ -60,11 +60,11 @@ function viaLink(sock: string, req: string): Promise<{ answer?: string; sent: bo
         const line = buf.slice(0, i); buf = buf.slice(i + 1);
         let m: any; try { m = JSON.parse(line); } catch { continue; }
         if (m.id !== 1) continue;
-        if (m.error) { if (/^no link to the laptop|^no op /.test(String(m.error))) sent = false; return end({ why: String(m.error) }); } // refused before anything went out
+        if (m.error) { if (/^no link to the laptop|^no op |^bad op|^args over |^only on a remote world/.test(String(m.error))) sent = false; return end({ why: String(m.error) }); } // the daemon refused before anything went to the laptop
         return end({ answer: JSON.stringify(m.result?.result ?? m.result) });
       }
     });
-    c.on("error", (e: any) => { if (!sent || e?.code === "ECONNREFUSED" || e?.code === "ENOENT") sent = false; end({ why: e?.message }); });
+    c.on("error", (e: any) => end({ why: e?.message })); // (sent stays as it was: once written, an error never means "not sent")
     c.on("close", () => end({ why: "closed" }));
   });
 }

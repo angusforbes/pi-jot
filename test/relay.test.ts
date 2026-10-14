@@ -217,3 +217,12 @@ test("J569 a write whose link answer is lost after it was sent is not repeated t
   expect(readFileSync(join(LAPTOP, "Notes/LinkLost.md"), "utf8")).toBe("once\n"); expect(win).toBe(0);
   srv.close(); delete process.env.PI_JOT_RELAY_LINK; noteUi(ctx);
 });
+test("J569 (LinkJotCheck) a daemon refusal before sending (args over 1 MB) is 'not sent': the window is tried", async () => {
+  const net = await import("node:net"); const sock = join(T, "daemon-big.sock");
+  const srv = net.createServer((c) => { let b = ""; c.on("data", (d) => { b += d; const i = b.indexOf("\n"); if (i < 0) return; const m = JSON.parse(b.slice(0, i)); c.end(JSON.stringify({ id: m.id, error: "args over 1 MB" }) + "\n"); }); });
+  await new Promise<void>((ok) => srv.listen(sock, ok)); process.env.PI_JOT_RELAY_LINK = sock;
+  const { noteUi, io } = await import("../src/io.ts"); noteUi(ctx);
+  const w = await io(REMOTE).append(join(REMOTE, "Notes/BigViaWindow.md"), "fits the window\n");
+  expect(readFileSync(w, "utf8")).toBe("fits the window\n");
+  srv.close(); delete process.env.PI_JOT_RELAY_LINK;
+});
