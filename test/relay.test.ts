@@ -169,3 +169,51 @@ test("(JotAllCheck) a change whose socket answer is lost is NOT repeated through
   expect(windowCalls).toBe(0);
   srv.close(); delete process.env.PI_JOT_RELAY_SOCKET; noteUi(ctx);
 });
+
+// ---- J569: the hyprpi link route (link.call op "jot") -------------------------------------------------------------------------
+async function fakeDaemon(sock: string, mode: "up" | "nolink" | "lost") {
+  const net = await import("node:net"); const seen: any[] = [];
+  const srv = net.createServer((c) => { let b = ""; c.on("data", (d) => { b += d; const i = b.indexOf("\n"); if (i < 0) return; const m = JSON.parse(b.slice(0, i)); seen.push(m);
+    if (mode === "nolink") return c.end(JSON.stringify({ id: m.id, error: "no link to the laptop right now (it is up while one of world H's panels is open there)" }) + "\n");
+    const ans = JSON.parse(answer(JSON.stringify(m.params.args)));
+    if (mode === "lost") return c.destroy();
+    c.end(JSON.stringify({ id: m.id, result: { result: ans } }) + "\n"); }); });
+  await new Promise<void>((ok) => srv.listen(sock, ok)); return { srv, seen };
+}
+test("J569 link route: a windowless agent's jot goes over link.call op jot to the laptop (no socket, no window)", async () => {
+  const sock = join(T, "daemon-up.sock"); const { srv, seen } = await fakeDaemon(sock, "up");
+  process.env.PI_JOT_RELAY_LINK = sock;
+  const { noteUi, io } = await import("../src/io.ts");
+  noteUi({ ui: { input: async () => { throw new Error("no window must be used"); } } });
+  const w = await io(REMOTE).append(join(REMOTE, "Notes/ViaLink.md"), "over the link\n");
+  expect(w.startsWith(LAPTOP)).toBe(true); expect(readFileSync(w, "utf8")).toBe("over the link\n");
+  expect(seen.every((m) => m.method === "link.call" && m.params.op === "jot")).toBe(true);
+  srv.close(); delete process.env.PI_JOT_RELAY_LINK; noteUi(ctx); expect(listAll(REMOTE)).toEqual([]);
+});
+test("J569 no H panel open (link down): refused at once, nothing sent, nothing saved, and the message says to open a panel", async () => {
+  const sock = join(T, "daemon-nolink.sock"); const { srv } = await fakeDaemon(sock, "nolink");
+  process.env.PI_JOT_RELAY_LINK = sock;
+  const { noteUi, io } = await import("../src/io.ts");
+  noteUi({ ui: { input: async () => undefined } }); // a windowless agent: its window request goes nowhere
+  const before = listAll(LAPTOP).length;
+  await expect(io(REMOTE).append(join(REMOTE, "Notes/NoLink.md"), "x\n")).rejects.toThrow(/nothing was saved.*panels is open|panels is open.*nothing was saved/s);
+  expect(listAll(LAPTOP).length).toBe(before);
+  srv.close(); delete process.env.PI_JOT_RELAY_LINK; noteUi(ctx);
+});
+test("J569 link down but the agent has a window: falls back to the window and saves once", async () => {
+  const sock = join(T, "daemon-nolink2.sock"); const { srv } = await fakeDaemon(sock, "nolink");
+  process.env.PI_JOT_RELAY_LINK = sock;
+  const { noteUi, io } = await import("../src/io.ts"); noteUi(ctx);
+  const w = await io(REMOTE).append(join(REMOTE, "Notes/WindowAfterNoLink.md"), "via window\n");
+  expect(readFileSync(w, "utf8")).toBe("via window\n");
+  srv.close(); delete process.env.PI_JOT_RELAY_LINK;
+});
+test("J569 a write whose link answer is lost after it was sent is not repeated through the window", async () => {
+  const sock = join(T, "daemon-lost.sock"); const { srv } = await fakeDaemon(sock, "lost");
+  process.env.PI_JOT_RELAY_LINK = sock; let win = 0;
+  const { noteUi, io } = await import("../src/io.ts");
+  noteUi({ ui: { input: async (_t: string, ph?: string) => { win++; return answer(ph!); } } });
+  await expect(io(REMOTE).append(join(REMOTE, "Notes/LinkLost.md"), "once\n")).rejects.toThrow(/may or may not/);
+  expect(readFileSync(join(LAPTOP, "Notes/LinkLost.md"), "utf8")).toBe("once\n"); expect(win).toBe(0);
+  srv.close(); delete process.env.PI_JOT_RELAY_LINK; noteUi(ctx);
+});

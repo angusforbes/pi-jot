@@ -43,10 +43,36 @@ function viaSocket(sock: string, req: string): Promise<{ answer?: string; sent: 
   });
 }
 
+// J569: route 2, hyprpi's per-world link (J555): the machine's hyprpi daemon (PI_JOT_RELAY_LINK = its socket) passes a
+// "link.call" op "jot" to the laptop, which answers with the same relay host. Up only while one of that world's panels is open on
+// the laptop; when it isn't, the daemon refuses at once ("no link …"), nothing was sent, and the next route is tried. Returns the
+// answer line, or { sent } when there was none (sent = the request may have reached the laptop).
+function viaLink(sock: string, req: string): Promise<{ answer?: string; sent: boolean; why?: string }> {
+  return new Promise((ok) => {
+    let buf = "", done = false, sent = false;
+    const end = (r: { answer?: string; why?: string }) => { if (!done) { done = true; try { c.destroy(); } catch { /* */ } ok({ ...r, sent }); } };
+    const c = createConnection(sock);
+    c.setTimeout(RELAY_TIMEOUT_MS + 5000, () => end({ why: "no answer" }));
+    c.on("connect", () => { sent = true; c.write(JSON.stringify({ id: 1, method: "link.call", params: { op: "jot", args: JSON.parse(req), timeoutMs: RELAY_TIMEOUT_MS } }) + "\n"); });
+    c.on("data", (d) => {
+      buf += d; let i;
+      while ((i = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, i); buf = buf.slice(i + 1);
+        let m: any; try { m = JSON.parse(line); } catch { continue; }
+        if (m.id !== 1) continue;
+        if (m.error) { if (/^no link to the laptop|^no op /.test(String(m.error))) sent = false; return end({ why: String(m.error) }); } // refused before anything went out
+        return end({ answer: JSON.stringify(m.result?.result ?? m.result) });
+      }
+    });
+    c.on("error", (e: any) => { if (!sent || e?.code === "ECONNREFUSED" || e?.code === "ENOENT") sent = false; end({ why: e?.message }); });
+    c.on("close", () => end({ why: "closed" }));
+  });
+}
+
 async function call(root: string, op: string, p: string, data?: string): Promise<any> {
   const req = JSON.stringify({ v: 1, op, path: relPath(root, p), ...(data === undefined ? {} : { data }) });
   const sock = process.env.PI_JOT_RELAY_SOCKET;
-  let answer: string | undefined;
+  let answer: string | undefined, linkWhy = "";
   if (sock && existsSync(sock)) {
     const r = await viaSocket(sock, req);
     answer = r.answer;
@@ -55,11 +81,19 @@ async function call(root: string, op: string, p: string, data?: string): Promise
     if (answer === undefined && r.sent && !["exists", "read", "list", "find", "where"].includes(op))
       throw new Error("pi-jot: the laptop's answer was lost after the request reached it, so it may or may not have been saved: check the note before trying again");
   }
+  const link = process.env.PI_JOT_RELAY_LINK;
+  if (answer === undefined && link && existsSync(link)) {
+    const r = await viaLink(link, req);
+    answer = r.answer;
+    if (answer === undefined && r.sent && !["exists", "read", "list", "find", "where"].includes(op))
+      throw new Error(`pi-jot: the laptop's answer over the link was lost after the request reached it (${r.why || "?"}), so it may or may not have been saved: check the note before trying again`);
+    if (answer === undefined) linkWhy = r.why || "";
+  }
   if (answer === undefined) {
-    if (!ui?.input) throw new Error("pi-jot: the laptop isn't reachable (no relay socket answering and no laptop window); nothing was saved");
+    if (!ui?.input) throw new Error(`pi-jot: the laptop isn't reachable${linkWhy ? ` (${linkWhy})` : " (no relay socket or link answering, and no laptop window)"}; nothing was saved`);
     answer = await ui.input(RELAY_TITLE, req, { timeout: RELAY_TIMEOUT_MS });
   }
-  if (answer === undefined) throw new Error("pi-jot: the laptop didn't answer (asleep, or no window connected); nothing was saved");
+  if (answer === undefined) throw new Error(`pi-jot: the laptop didn't answer (asleep, or no window connected${linkWhy ? `; link: ${linkWhy}` : ""}); nothing was saved`);
   let r: any; try { r = JSON.parse(answer); } catch { throw new Error("pi-jot: the laptop window sent an unreadable answer; nothing was saved"); }
   if (!r?.ok) throw new Error(`pi-jot (laptop): ${r?.error || "failed"}`);
   return r.value;
