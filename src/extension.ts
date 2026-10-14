@@ -242,8 +242,10 @@ export default function piJot(pi: ExtensionAPI) {
   async function planFile(cfg: JotConfig, ref: string, cwd: string): Promise<string> {
     const folders = Object.values(cfg.kinds).filter((k) => k.converse).map((k) => resolvePaths(cfg, k, "x", new Date(), cwd).folder);
     const r = String(ref).trim().replace(/^file:\/\//, "");
-    const cands = r.includes("/") ? [resolve(cwd, r.replace(/^~(?=\/)/, homedir()))] : folders.map((f) => resolve(f, safeTitle(r) + ".md"));
     const fs = io(jotRoot(cfg, cwd)), real = fs.real; // a symlink must not lead out of Plans/ (in relay mode the laptop checks that)
+    // (J559: in relay mode a path is the LAPTOP's, as jot_plan returned it: go by its file name in the plan folders)
+    const byName = (n: string) => folders.map((f) => resolve(f, safeTitle(n.replace(/\.md$/i, "")) + ".md"));
+    const cands = r.includes("/") ? (fs.relay ? byName(r.split("/").pop() || "") : [resolve(cwd, r.replace(/^~(?=\/)/, homedir()))]) : byName(r);
     for (const f of cands) if (folders.some((d) => (real(f) + sep).startsWith(real(d) + sep)) && (await fs.exists(f))) return f;
     throw new Error(`pi-jot: no plan note "${ref}" in ${[...new Set(folders.map(tilde))].join(", ")}`);
   }
@@ -274,7 +276,7 @@ export default function piJot(pi: ExtensionAPI) {
       if (action === "read" || action === "status" || action === "tick") {
         const f = await planFile(cfg, p.file ?? "", cwd);
         let note = await fs.read(f);
-        if (action === "read") return out(`${f}\n\n${note}`, { file: f, status: planStatus(note), action });
+        if (action === "read") { const shown = await fs.where(f); return out(`${shown}\n\n${note}`, { file: shown, status: planStatus(note), action }); }
         note = action === "status" ? setStatus(note, String(p.status)) : tickTask(note, String(p.task ?? ""), p.done !== false);
         const where = await fs.write(f, note);
         return out(`${action === "status" ? `Status ${p.status}` : `${p.done === false ? "Unticked" : "Ticked"} ${p.task}`}: ${where}`, { file: where, status: planStatus(note), action, task: p.task });

@@ -43,6 +43,8 @@ export function io(root: string) {
     read: async (p: string): Promise<string> => (relay ? String(await call(root, "read", p)) : readFile(p, "utf8")),
     write: async (p: string, data: string): Promise<string> => { if (relay) return String(await call(root, "write", p, data)); await writeFile(p, data, "utf8"); return p; },
     append: async (p: string, data: string): Promise<string> => { if (relay) return String(await call(root, "append", p, data)); await appendFile(p, data, "utf8"); return p; },
+    /** where the file is for the user: the laptop's absolute path in relay mode */
+    where: async (p: string): Promise<string> => (relay ? String(await call(root, "where", p)) : p),
     mkdirp: async (p: string): Promise<void> => { if (relay) await call(root, "mkdir", p); else await mkdir(p, { recursive: true }); },
     /** a real path (symlinks resolved) for local checks; in relay mode the laptop resolves and confines it itself */
     real: (p: string): string => { if (relay) return p; try { return realpathSync(p); } catch { return p; } },

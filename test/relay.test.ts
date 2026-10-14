@@ -77,6 +77,10 @@ test("/jot-soliloquy: the conversation's plan note is written, updated, read and
   expect(readFileSync(f, "utf8")).toContain("status: ready");
   r = await tools.jot_plan.execute("p3", { action: "read", file: "Hub Plan" }, null, null, ctx);
   expect(r.content[0].text).toContain("T1 do a thing");
+  expect(r.content[0].text.startsWith(LAPTOP)).toBe(true); // (JotRelayCheck) read shows the laptop path
+  const laptopPath = r.details.file; expect(laptopPath).toBe(f);
+  r = await tools.jot_plan.execute("p3b", { action: "status", file: laptopPath, status: "running" }, null, null, ctx); // the path jot_plan returned works
+  expect(readFileSync(f, "utf8")).toContain("status: running");
   r = await tools.jot_plan.execute("p4", { action: "tick", file: "Hub Plan", task: "T1" }, null, null, ctx);
   expect(readFileSync(f, "utf8")).toContain("[x] T1");
   expect(listAll(REMOTE)).toEqual([]);
