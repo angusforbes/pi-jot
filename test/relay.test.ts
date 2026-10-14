@@ -102,5 +102,8 @@ test("the laptop host refuses paths outside its root (.., absolute, through a sy
   mkdirSync(join(T, "outside"), { recursive: true }); symlinkSync(join(T, "outside"), join(LAPTOP, "Link"));
   expect(ask("Link/x.md").ok).toBe(false);
   expect(existsSync(join(T, "outside/x.md"))).toBe(false);
+  symlinkSync(join(T, "nowhere.txt"), join(LAPTOP, "dangling.md")); // (JotRelayCheck) a dangling link out of the root
+  expect(ask("dangling.md", "append").ok).toBe(false); expect(ask("dangling.md", "write").ok).toBe(false);
+  expect(existsSync(join(T, "nowhere.txt"))).toBe(false);
   expect(ask("Notes/ok.md").ok).toBe(true);
 });
