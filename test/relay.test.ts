@@ -14,6 +14,9 @@ const T = mkdtempSync(join(tmpdir(), "jot-relay-")), REMOTE = join(T, "remote-no
 mkdirSync(REMOTE, { recursive: true }); mkdirSync(LAPTOP, { recursive: true });
 const CFG = join(T, "jot.json");
 writeFileSync(CFG, JSON.stringify({ root: REMOTE, user: "Angus", kinds: { note: { folder: "Notes", command: "jot-note" }, idea: { folder: "Ideas", command: "jot-idea" }, soliloquy: { folder: "Plans", command: "jot-soliloquy" } } }));
+// (Blink: bun runs every test file in ONE process, so whatever this file sets must be put back for the next file)
+const ENV_KEYS = ["PI_JOT_CONFIG", "PI_JOT_RELAY", "PI_JOT_RELAY_TIMEOUT_MS", "PI_JOT_RELAY_SOCKET", "PI_JOT_RELAY_LINK"] as const;
+const savedEnv = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
 process.env.PI_JOT_CONFIG = CFG; process.env.PI_JOT_RELAY = "1"; process.env.PI_JOT_RELAY_TIMEOUT_MS = "2000";
 
 const HOST = process.env.JOT_RELAY_HOST || join(homedir(), "Harness/hyprpi/lib/jot-relay-host.mjs");
@@ -33,7 +36,11 @@ const cmds: Record<string, any> = {}, tools: Record<string, any> = {}, sent: str
 const handlers: Record<string, any[]> = {};
 const pi: any = { registerCommand: (n: string, c: any) => { cmds[n] = c; }, registerTool: (t: any) => { tools[t.name] = t; }, on: (e: string, h: any) => { (handlers[e] ??= []).push(h); }, sendUserMessage: (m: string) => { sent.push(m); }, appendEntry: () => {} };
 beforeAll(async () => { const ext = await import("../src/extension.ts"); ext.default(pi); });
-afterAll(() => { /* temp files stay for a look if a test failed */ });
+afterAll(async () => { // temp files stay for a look if a test failed; the process state is put back
+  for (const k of ENV_KEYS) { if (savedEnv[k] === undefined) delete process.env[k]; else process.env[k] = savedEnv[k]; }
+  const { noteUi } = await import("../src/io.ts"); noteUi({ ui: { input: async () => undefined } }); // no live relay UI left behind (relay mode is off again anyway)
+  const { setTimeZone } = await import("../src/core.ts"); setTimeZone(undefined);
+});
 
 test("core.writeEntry: the entry lands on the laptop, verbatim; nothing on the remote", async () => {
   const { writeEntry, loadConfig } = await import("../src/core.ts");
