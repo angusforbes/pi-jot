@@ -4,7 +4,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { homedir } from "node:os";
 import { Type } from "typebox";
-import { dirname, resolve, sep } from "node:path";
+import { dirname, relative, resolve, sep } from "node:path";
 import { addWords, checkQuestionNumbers, dateStr, dupes, discussSections, openQuestions, fill, jotRoot, type JotConfig, type Kind, loadConfig, parseInput, PLAN_STATUSES, planStatus, renderPlan, resolvePaths, safeTitle, setBody, setStatus, tickTask, titleFrom, wordsEntry, writeEntry } from "./core.ts";
 import { io, noteUi, relayWanted } from "./io.ts"; // J559: file access, local or relayed to a hyprpi remote agent's laptop window
 
@@ -67,6 +67,21 @@ ${keepId
 
 function todoBase(cfg: JotConfig, kind: Kind): string {
   const { root, folder, file } = resolvePaths(cfg, kind, "todo");
+  if (relayWanted()) { // J561 (Angus "23a"): the lists are on the laptop; only the jot_file tool reaches them
+    const rf = relative(root, file), rd = relative(root, folder);
+    return `You are my todo assistant. My todo lists are on my LAPTOP, in my notes folder; this machine has no copy. Read and change them ONLY with the jot_file tool (paths are relative to the notes folder; never use read, edit, write or bash on them). The master list is \`${rf}\`.
+
+Steps:
+1. jot_file read \`${rf}\`. Collect every \`[[wikilink]]\` in it. Resolve each to a file: \`${rd}/<name>.md\` first (jot_file read), else jot_file find "<name>.md".
+   Read each linked note (one level deep is enough; also follow links inside linked *todo* notes if they point to other todo notes).
+2. Extract open items: \`- [ ]\` checkboxes, and in notes without checkboxes (e.g. monthly lists) treat plain bullets that read like actions as open. Ignore \`## Done\` / \`[x]\` items except to note recent completions.
+3. Reply with a compact summary, grouped by source note, ordered: things that need my action first, then retries/waiting-on-others, then build/nice-to-have. One line per item, keep the wording from the note. Include the exact command where the note gives one. Finish with a one-line count ("N open across M lists") and flag anything that looks stale or duplicated.
+
+To change a list: jot_file read it, then jot_file write the WHOLE new content (the same text with only your change), so nothing else moves.
+If the master list does not exist yet, create it (with a "## Quick one-offs" section) only when adding an item; otherwise say there is no list yet.
+Never delete content; edit notes with minimal diffs.
+Keep the whole reply short — it should be readable in one screen.`;
+  }
   return `You are my todo assistant. The master list is \`${file}\`.
 
 Steps:
@@ -93,7 +108,7 @@ export function todoMessage(cfg: JotConfig, kind: Kind, raw: string): string {
 ${block("TODO-TEXT", m[2])}
 
 - Append \`- [ ] <item text>\` to the most relevant project todo (or the master "Quick one-offs" section if none fits).
-- Copy the item text character for character: keep every word, typo, apostrophe, quote mark and line break (further lines indented two spaces). Do not reword, summarise, correct spelling or add anything. Make the edit with the edit tool or a quoted heredoc (<<'TODOEOF') so nothing alters the text.
+- Copy the item text character for character: keep every word, typo, apostrophe, quote mark and line break (further lines indented two spaces). Do not reword, summarise, correct spelling or add anything. ${relayWanted() ? "Make the edit with jot_file (read, then write the whole file)" : "Make the edit with the edit tool or a quoted heredoc (<<'TODOEOF')"} so nothing alters the text.
 - Tell me where you put it, then show the summary for that list.
 
 ${base}`;
@@ -308,6 +323,32 @@ export default function piJot(pi: ExtensionAPI) {
       saveConv();
       return out(`Saved ${file} (status ${status}${p.close ? "; conversation closed" : ""})`, { file, status, action: "update", closed: !!p.close, kind: kname });
   }
+
+  // J561 (Angus "23a"): in relay mode the agent's own read/edit tools can't reach the laptop's notes, so /jot-todo works through this
+  if (relayWanted()) pi.registerTool({
+    name: "jot_file",
+    label: "Notes file (laptop)",
+    description:
+      "Read or change a file in the user's notes folder, which lives on their LAPTOP (this machine has no copy). Paths are relative to the notes folder, e.g. ThingsToDo/todo.md. " +
+      "action read (path), write (path + the WHOLE new content), list (path = a folder, \".\" = the notes folder), find (name = a file name, e.g. Garden.md). Used by /jot-todo; never use read/edit/bash on these files.",
+    parameters: Type.Object({
+      action: Type.String({ description: "read | write | list | find" }),
+      path: Type.Optional(Type.String({ description: "read / write / list: relative to the notes folder" })),
+      content: Type.Optional(Type.String({ description: "write: the whole new file content" })),
+      name: Type.Optional(Type.String({ description: "find: a file name" })),
+    }),
+    async execute(_id: string, p: any, _signal: any, _onUpdate: any, ctx: any) {
+      noteUi(ctx);
+      const cfg = loadConfig(), root = jotRoot(cfg, ctx?.cwd ?? process.cwd()), fs = io(root), a = String(p.action || "");
+      const at = (r: string) => resolve(root, String(r || ".").replace(/^\/+/, ""));
+      const out = (text: string, details: any) => ({ content: [{ type: "text", text }], details });
+      if (a === "read") return out(await fs.read(at(p.path)), { action: a, path: p.path });
+      if (a === "write") { if (typeof p.content !== "string") throw new Error("write needs content (the whole file)"); await fs.mkdirp(dirname(at(p.path))); const w = await fs.write(at(p.path), p.content); return out(`Saved ${w}`, { action: a, path: p.path, file: w }); }
+      if (a === "list") return out((await fs.list(at(p.path))).join("\n") || "(empty)", { action: a, path: p.path });
+      if (a === "find") return out((await fs.find(String(p.name || ""))).join("\n") || "(none)", { action: a, name: p.name });
+      throw new Error(`Unknown action "${a}" (read | write | list | find)`);
+    },
+  });
 
   pi.registerTool({
     name: "jot_save",

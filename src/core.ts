@@ -53,7 +53,7 @@ export type Kind = {
   enabled?: boolean;
 };
 
-export type JotConfig = { root: string; user: string; kinds: Record<string, Kind> };
+export type JotConfig = { root: string; user: string; kinds: Record<string, Kind>; timeZone?: string };
 
 export const CONFIG_PATH = process.env.PI_JOT_CONFIG || join(homedir(), ".pi", "agent", "jot.json");
 
@@ -141,7 +141,17 @@ export function loadConfig(path = CONFIG_PATH): JotConfig {
   const kinds: Record<string, Kind> = {};
   for (const [k, v] of Object.entries(DEFAULTS.kinds)) kinds[k] = { ...v };
   for (const [k, v] of Object.entries(user.kinds ?? {})) kinds[k] = { ...(kinds[k] ?? { mode: "append", folder: k, file: "{title}.md", entry: "- [{time}] {text}", title: "agent" }), ...v };
-  return { root: user.root ?? DEFAULTS.root, user: user.user ?? DEFAULTS.user, kinds };
+  setTimeZone(user.timeZone);
+  return { root: user.root ?? DEFAULTS.root, user: user.user ?? DEFAULTS.user, kinds, ...(zone ? { timeZone: zone } : {}) };
+}
+
+// J561 (Angus "22a"): the time zone of entry stamps and dates. Default: this machine's. A config "timeZone" (IANA, e.g.
+// "America/Chicago") overrides it: hyprpi writes the laptop's into a remote machine's jot.json, so a remote agent's jots carry
+// the laptop's time, not the box's (UTC). An unknown zone is ignored.
+let zone: string | undefined;
+export function setTimeZone(z?: string): void {
+  if (typeof z !== "string" || !z.trim()) { zone = undefined; return; }
+  try { new Intl.DateTimeFormat("en-US", { timeZone: z.trim() }); zone = z.trim(); } catch { zone = undefined; }
 }
 
 // words skipped at the start when making a title ("remember to buy eggs" -> BuyEggs)
@@ -171,14 +181,15 @@ export function safeTitle(t: string, fallback = "Untitled"): string {
   return s || fallback;
 }
 
-/** "22:17 CDT" in local time. */
+/** "22:17 CDT" in local time (or the configured timeZone). */
 export function stamp(d = new Date()): string {
-  const t = d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false, timeZoneName: "short" });
+  const t = d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false, timeZoneName: "short", ...(zone ? { timeZone: zone } : {}) });
   return t.replace(/^24:/, "00:");
 }
 
-/** Local "YYYY-MM-DD". */
+/** Local "YYYY-MM-DD" (or in the configured timeZone). */
 export function dateStr(d = new Date()): string {
+  if (zone) { const p = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone: zone, year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(d).map((x) => [x.type, x.value])); return `${p.year}-${p.month}-${p.day}`; }
   const p = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }

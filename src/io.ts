@@ -9,6 +9,7 @@
 import { existsSync, realpathSync } from "node:fs";
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
+import { createConnection } from "node:net";
 
 export const RELAY_TITLE = "pi-jot relay";
 export const RELAY_TIMEOUT_MS = Number(process.env.PI_JOT_RELAY_TIMEOUT_MS) || 30000;
@@ -21,14 +22,36 @@ export function noteUi(ctx: any): void { if (ctx?.ui?.input) ui = ctx.ui; }
 /** A path inside the jot root, as the relative path that travels; refuses anything outside it. */
 export function relPath(root: string, p: string): string {
   const r = relative(resolve(root), resolve(p));
-  if (!r || r === ".." || r.startsWith("../") || isAbsolute(r)) throw new Error(`pi-jot: ${p} is outside the notes folder (${root})`);
+  if (!r) return "."; // the root itself (list / find)
+  if (r === ".." || r.startsWith("../") || isAbsolute(r)) throw new Error(`pi-jot: ${p} is outside the notes folder (${root})`);
   return r;
 }
 
+// J561 ("all hits go to laptop obsidian"): the laptop also serves the same requests on a unix socket on this machine
+// (PI_JOT_RELAY_SOCKET, forwarded over ssh by the laptop's hyprpi-jot-relay service): one JSON line in, one JSON line out. Used
+// first, so agents without a laptop window and the world's Thoughts reach the laptop too; the window is the fallback.
+function viaSocket(sock: string, req: string): Promise<string | undefined> {
+  return new Promise((ok) => {
+    let buf = "", done = false;
+    const end = (v: string | undefined) => { if (!done) { done = true; try { c.destroy(); } catch { /* */ } ok(v); } };
+    const c = createConnection(sock);
+    c.setTimeout(RELAY_TIMEOUT_MS, () => end(undefined));
+    c.on("connect", () => c.write(req + "\n"));
+    c.on("data", (d) => { buf += d; const i = buf.indexOf("\n"); if (i >= 0) end(buf.slice(0, i)); });
+    c.on("error", () => end(undefined));
+    c.on("close", () => end(undefined));
+  });
+}
+
 async function call(root: string, op: string, p: string, data?: string): Promise<any> {
-  if (!ui?.input) throw new Error("pi-jot: no laptop window is connected to save through (relay mode); nothing was saved");
-  const answer = await ui.input(RELAY_TITLE, JSON.stringify({ v: 1, op, path: relPath(root, p), ...(data === undefined ? {} : { data }) }), { timeout: RELAY_TIMEOUT_MS });
-  if (answer === undefined) throw new Error("pi-jot: the laptop window didn't answer (closed or disconnected); nothing was saved");
+  const req = JSON.stringify({ v: 1, op, path: relPath(root, p), ...(data === undefined ? {} : { data }) });
+  const sock = process.env.PI_JOT_RELAY_SOCKET;
+  let answer = sock && existsSync(sock) ? await viaSocket(sock, req) : undefined;
+  if (answer === undefined) {
+    if (!ui?.input) throw new Error("pi-jot: the laptop isn't reachable (no relay socket answering and no laptop window); nothing was saved");
+    answer = await ui.input(RELAY_TITLE, req, { timeout: RELAY_TIMEOUT_MS });
+  }
+  if (answer === undefined) throw new Error("pi-jot: the laptop didn't answer (asleep, or no window connected); nothing was saved");
   let r: any; try { r = JSON.parse(answer); } catch { throw new Error("pi-jot: the laptop window sent an unreadable answer; nothing was saved"); }
   if (!r?.ok) throw new Error(`pi-jot (laptop): ${r?.error || "failed"}`);
   return r.value;
@@ -43,6 +66,9 @@ export function io(root: string) {
     read: async (p: string): Promise<string> => (relay ? String(await call(root, "read", p)) : readFile(p, "utf8")),
     write: async (p: string, data: string): Promise<string> => { if (relay) return String(await call(root, "write", p, data)); await writeFile(p, data, "utf8"); return p; },
     append: async (p: string, data: string): Promise<string> => { if (relay) return String(await call(root, "append", p, data)); await appendFile(p, data, "utf8"); return p; },
+    /** relay mode only (J561, /jot-todo): a folder's entries ("name/" for folders), and files named NAME anywhere under the root */
+    list: async (p: string): Promise<string[]> => (relay ? (await call(root, "list", p)) as string[] : []),
+    find: async (name: string): Promise<string[]> => (relay ? (await call(root, "find", root + "/.", name)) as string[] : []),
     /** where the file is for the user: the laptop's absolute path in relay mode */
     where: async (p: string): Promise<string> => (relay ? String(await call(root, "where", p)) : p),
     mkdirp: async (p: string): Promise<void> => { if (relay) await call(root, "mkdir", p); else await mkdir(p, { recursive: true }); },
