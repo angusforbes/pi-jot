@@ -110,6 +110,14 @@ the path. With a `pending_id` from a command message it writes the held, as-type
 `jot_plan { action?, title?, body?, status?, close?, file?, task?, done? }`: the planning conversation's note
 (see above); `read`, `status` and `tick` work on any note in a conversation kind's folder.
 
+`jot_file { action, path?, content?, name? }` (relay mode only): read, write (whole file), list or find files in the notes folder on your computer; `/jot-todo` uses it there.
+
+## Relay mode: an agent on another machine writes to your notes
+
+When pi runs on a remote machine for you (e.g. hyprpi's remote worlds), set `PI_JOT_RELAY=1` there: pi-jot then never writes on that machine. Every file access for a jot (`exists`, `read`, `write`, `append`, `mkdir`, and `list` / `find` for `/jot-todo`) is sent to your own computer, with paths relative to the notes root, and answered there (hyprpi: `lib/jot-relay-host.mjs`, confined to your notes root). It tries a unix socket first (`PI_JOT_RELAY_SOCKET`, which your computer forwards to the machine), then the agent's window (a pi RPC extension-UI `input` request titled `pi-jot relay` that the window answers itself). If neither answers, the jot fails with "nothing was saved". `/jot-todo` uses the `jot_file` tool (read / write the whole file / list / find) in relay mode, because the agent's own edit tools can't reach your notes. Set `"timeZone"` (IANA, e.g. `"America/Chicago"`) in that machine's `jot.json` to stamp entries in your time zone, not the machine's.
+
+Your own notes stay the master copy. An agent may also keep a copy of an important note or todo where it needs one: in a shared folder that syncs with your computer, and/or locally on that machine. Those are copies; your notes are the reference.
+
 ## Develop
 
 `bun test` (core logic: titles, templates, paths, merging, writing, handlers).
