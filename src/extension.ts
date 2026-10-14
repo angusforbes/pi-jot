@@ -6,7 +6,7 @@ import { homedir } from "node:os";
 import { Type } from "typebox";
 import { dirname, resolve, sep } from "node:path";
 import { addWords, checkQuestionNumbers, dateStr, dupes, discussSections, openQuestions, fill, jotRoot, type JotConfig, type Kind, loadConfig, parseInput, PLAN_STATUSES, planStatus, renderPlan, resolvePaths, safeTitle, setBody, setStatus, tickTask, titleFrom, wordsEntry, writeEntry } from "./core.ts";
-import { io, noteUi } from "./io.ts"; // J559: file access, local or relayed to a hyprpi remote agent's laptop window
+import { io, noteUi, relayWanted } from "./io.ts"; // J559: file access, local or relayed to a hyprpi remote agent's laptop window
 
 // J398: an open planning conversation (/jot-soliloquy, /jot-parallel) in this session. Persisted with
 // pi.appendEntry so it survives a restart or /reload of the same session.
@@ -145,7 +145,8 @@ export default function piJot(pi: ExtensionAPI) {
   }); };
   // Agent windows: what the user typed (not commands, not messages other extensions send).
   pi.on("input", async (event: any) => {
-    if (conv && event.source === "interactive" && typeof event.text === "string" && !event.text.trimStart().startsWith("/")) {
+    // (J559: a hyprpi remote agent's laptop window sends what the user typed as an RPC prompt, so in relay mode "rpc" counts too)
+    if (conv && (event.source === "interactive" || (relayWanted() && event.source === "rpc")) && typeof event.text === "string" && !event.text.trimStart().startsWith("/")) {
       try { await keepWords(event.text); } catch (err) { console.error("pi-jot:", (err as Error).message); }
     }
     return { action: "continue" };

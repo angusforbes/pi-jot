@@ -30,7 +30,8 @@ const listAll = (d: string): string[] => existsSync(d) ? readdirSync(d, { recurs
 
 // a mock pi: captures commands, tools and the messages the extension sends to the model
 const cmds: Record<string, any> = {}, tools: Record<string, any> = {}, sent: string[] = [];
-const pi: any = { registerCommand: (n: string, c: any) => { cmds[n] = c; }, registerTool: (t: any) => { tools[t.name] = t; }, on: () => {}, sendUserMessage: (m: string) => { sent.push(m); }, appendEntry: () => {} };
+const handlers: Record<string, any[]> = {};
+const pi: any = { registerCommand: (n: string, c: any) => { cmds[n] = c; }, registerTool: (t: any) => { tools[t.name] = t; }, on: (e: string, h: any) => { (handlers[e] ??= []).push(h); }, sendUserMessage: (m: string) => { sent.push(m); }, appendEntry: () => {} };
 beforeAll(async () => { const ext = await import("../src/extension.ts"); ext.default(pi); });
 afterAll(() => { /* temp files stay for a look if a test failed */ });
 
@@ -70,6 +71,8 @@ test("/jot-soliloquy: the conversation's plan note is written, updated, read and
   expect(r.content[0].text).toContain(LAPTOP);
   const f = join(LAPTOP, "Plans/Hub Plan.md");
   expect(readFileSync(f, "utf8")).toContain("thinking about the hub: keep it cheap");
+  for (const h of handlers.input ?? []) await h({ source: "rpc", text: "1a — and we're done, close it" }); // what he types next in the remote window (an RPC prompt)
+  expect(readFileSync(f, "utf8")).toContain("1a — and we're done, close it");
   r = await tools.jot_plan.execute("p2", { body: "## Plan\n- [ ] T1 do a thing", status: "ready", close: true }, null, null, ctx);
   expect(readFileSync(f, "utf8")).toContain("status: ready");
   r = await tools.jot_plan.execute("p3", { action: "read", file: "Hub Plan" }, null, null, ctx);
