@@ -111,3 +111,45 @@ test("the laptop host refuses paths outside its root (.., absolute, through a sy
   expect(existsSync(join(T, "nowhere.txt"))).toBe(false);
   expect(ask("Notes/ok.md").ok).toBe(true);
 });
+
+// ---- J561 -------------------------------------------------------------------------------------------------------------------
+test("timeZone in jot.json stamps entries in that zone (the laptop's), not the machine's", async () => {
+  const { stamp, dateStr, setTimeZone } = await import("../src/core.ts");
+  const d = new Date("2026-07-01T03:30:00Z");
+  setTimeZone("America/Chicago"); expect(stamp(d)).toBe("22:30 CDT"); expect(dateStr(d)).toBe("2026-06-30");
+  setTimeZone("Asia/Tokyo"); expect(stamp(d)).toMatch(/^12:30 GMT\+9$/); expect(dateStr(d)).toBe("2026-07-01");
+  setTimeZone("Not/AZone"); expect(stamp(d)).toBe(new Date(d).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false, timeZoneName: "short" }).replace(/^24:/, "00:"));
+  setTimeZone(undefined);
+});
+
+test("jot_file (relay mode, /jot-todo): read, write the whole file, list and find, all on the laptop", async () => {
+  expect(tools.jot_file).toBeTruthy();
+  mkdirSync(join(LAPTOP, "ThingsToDo"), { recursive: true }); writeFileSync(join(LAPTOP, "ThingsToDo/todo.md"), "## Quick one-offs\n- [ ] a\n");
+  let r = await tools.jot_file.execute("f1", { action: "read", path: "ThingsToDo/todo.md" }, null, null, ctx);
+  expect(r.content[0].text).toContain("- [ ] a");
+  r = await tools.jot_file.execute("f2", { action: "write", path: "ThingsToDo/todo.md", content: "## Quick one-offs\n- [ ] a\n- [ ] b \"q\" & é\n" }, null, null, ctx);
+  expect(readFileSync(join(LAPTOP, "ThingsToDo/todo.md"), "utf8")).toContain("- [ ] b \"q\" & é");
+  r = await tools.jot_file.execute("f3", { action: "list", path: "ThingsToDo" }, null, null, ctx);
+  expect(r.content[0].text).toContain("todo.md");
+  r = await tools.jot_file.execute("f4", { action: "find", name: "todo.md" }, null, null, ctx);
+  expect(r.content[0].text).toContain("ThingsToDo/todo.md");
+  await expect(tools.jot_file.execute("f5", { action: "read", path: "../outside.md" }, null, null, ctx)).rejects.toThrow();
+  expect(listAll(REMOTE)).toEqual([]);
+});
+
+test("the relay socket (PI_JOT_RELAY_SOCKET) is used first: a windowless agent's jot reaches the laptop", async () => {
+  const net = await import("node:net");
+  const sock = join(T, "jot.sock"); let seen = 0;
+  const srv = net.createServer((c) => { let b = ""; c.on("data", (d) => { b += d; const i = b.indexOf("\n"); if (i >= 0) { seen++; c.end(answer(b.slice(0, i)) + "\n"); } }); });
+  await new Promise<void>((ok) => srv.listen(sock, ok));
+  process.env.PI_JOT_RELAY_SOCKET = sock;
+  const { noteUi } = await import("../src/io.ts");
+  noteUi({ ui: { input: async () => { throw new Error("the window must not be used when the socket answers"); } } });
+  const { writeEntry, loadConfig } = await import("../src/core.ts");
+  const cfg = loadConfig(CFG);
+  const f = await writeEntry(cfg, "note", cfg.kinds.note, "from a windowless agent", "Windowless", T);
+  expect(readFileSync(f, "utf8")).toContain("from a windowless agent");
+  expect(seen).toBeGreaterThan(0);
+  srv.close(); delete process.env.PI_JOT_RELAY_SOCKET; noteUi(ctx);
+  expect(listAll(REMOTE)).toEqual([]);
+});
