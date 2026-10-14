@@ -153,3 +153,19 @@ test("the relay socket (PI_JOT_RELAY_SOCKET) is used first: a windowless agent's
   srv.close(); delete process.env.PI_JOT_RELAY_SOCKET; noteUi(ctx);
   expect(listAll(REMOTE)).toEqual([]);
 });
+
+test("(JotAllCheck) a change whose socket answer is lost is NOT repeated through the window: one line, and 'may or may not' said", async () => {
+  const net = await import("node:net");
+  const sock = join(T, "lost.sock");
+  const srv = net.createServer((c) => { let b = ""; c.on("data", (d) => { b += d; const i = b.indexOf("\n"); if (i >= 0) { answer(b.slice(0, i)); c.destroy(); } }); }); // carries it out, never answers
+  await new Promise<void>((ok) => srv.listen(sock, ok));
+  process.env.PI_JOT_RELAY_SOCKET = sock;
+  let windowCalls = 0;
+  const { noteUi, io } = await import("../src/io.ts");
+  noteUi({ ui: { input: async (_t: string, ph?: string) => { windowCalls++; return answer(ph!); } } });
+  const f = join(REMOTE, "Notes/LostAck.md");
+  await expect(io(REMOTE).append(f, "exactly once\n")).rejects.toThrow(/may or may not/);
+  expect(readFileSync(join(LAPTOP, "Notes/LostAck.md"), "utf8")).toBe("exactly once\n");
+  expect(windowCalls).toBe(0);
+  srv.close(); delete process.env.PI_JOT_RELAY_SOCKET; noteUi(ctx);
+});
