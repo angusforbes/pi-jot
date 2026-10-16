@@ -5,7 +5,9 @@
 // title is RELAY_TITLE and whose placeholder is the JSON request {v, op, path, data}. The laptop window answers it itself (never
 // shown) against ITS OWN jot root, and replies with JSON {ok, value | error}. Paths travel RELATIVE to the jot root, so the two
 // machines' home folders don't matter; anything outside the root is refused on both sides. No window connected within
-// RELAY_TIMEOUT_MS: the call fails, so nothing is saved anywhere and the tool says so.
+// RELAY_TIMEOUT_MS: the call fails, and the tool says so: "nothing was saved" only when the request certainly never left; when it
+// may have reached the laptop (an answer lost or unreadable, the window silent), pi-jot checks the file and reports what it found
+// (settle, J722).
 import { existsSync, realpathSync } from "node:fs";
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
@@ -13,6 +15,7 @@ import { createConnection } from "node:net";
 
 export const RELAY_TITLE = "pi-jot relay";
 export const RELAY_TIMEOUT_MS = Number(process.env.PI_JOT_RELAY_TIMEOUT_MS) || 30000;
+const relayTimeout = () => Number(process.env.PI_JOT_RELAY_TIMEOUT_MS) || 30000; // (read per call, so a test's short wait applies whatever loaded io.ts first)
 export const relayWanted = () => process.env.PI_JOT_RELAY === "1";
 
 type Ui = { input?: (title: string, placeholder?: string, opts?: { timeout?: number }) => Promise<string | undefined> };
@@ -35,7 +38,7 @@ function viaSocket(sock: string, req: string): Promise<{ answer?: string; sent: 
     let buf = "", done = false, sent = false;
     const end = (answer?: string) => { if (!done) { done = true; try { c.destroy(); } catch { /* */ } ok({ answer, sent }); } };
     const c = createConnection(sock);
-    c.setTimeout(RELAY_TIMEOUT_MS, () => end());
+    c.setTimeout(relayTimeout(), () => end());
     c.on("connect", () => { sent = true; c.write(req + "\n"); });
     c.on("data", (d) => { buf += d; const i = buf.indexOf("\n"); if (i >= 0) end(buf.slice(0, i)); });
     c.on("error", () => end());
@@ -52,8 +55,8 @@ function viaLink(sock: string, req: string): Promise<{ answer?: string; sent: bo
     let buf = "", done = false, sent = false;
     const end = (r: { answer?: string; why?: string }) => { if (!done) { done = true; try { c.destroy(); } catch { /* */ } ok({ ...r, sent }); } };
     const c = createConnection(sock);
-    c.setTimeout(RELAY_TIMEOUT_MS + 5000, () => end({ why: "no answer" }));
-    c.on("connect", () => { sent = true; c.write(JSON.stringify({ id: 1, method: "link.call", params: { op: "jot", args: JSON.parse(req), timeoutMs: RELAY_TIMEOUT_MS } }) + "\n"); });
+    c.setTimeout(relayTimeout() + 5000, () => end({ why: "no answer" }));
+    c.on("connect", () => { sent = true; c.write(JSON.stringify({ id: 1, method: "link.call", params: { op: "jot", args: JSON.parse(req), timeoutMs: relayTimeout() } }) + "\n"); });
     c.on("data", (d) => {
       buf += d; let i;
       while ((i = buf.indexOf("\n")) >= 0) {
@@ -69,34 +72,68 @@ function viaLink(sock: string, req: string): Promise<{ answer?: string; sent: bo
   });
 }
 
+const READS = ["exists", "read", "list", "find", "where"]; // safe to repeat; everything else (write / append / mkdir) is a change
+
 async function call(root: string, op: string, p: string, data?: string): Promise<any> {
   const req = JSON.stringify({ v: 1, op, path: relPath(root, p), ...(data === undefined ? {} : { data }) });
+  const change = !READS.includes(op);
   const sock = process.env.PI_JOT_RELAY_SOCKET;
   let answer: string | undefined, linkWhy = "";
   if (sock && existsSync(sock)) {
     const r = await viaSocket(sock, req);
     answer = r.answer;
     // (JotAllCheck) a request that reached the laptop but whose answer was lost may have been carried out: never repeat a change
-    // through the window then (it would write twice); say the outcome is unknown instead. A read or check is safe to repeat.
-    if (answer === undefined && r.sent && !["exists", "read", "list", "find", "where"].includes(op))
-      throw new Error("pi-jot: the laptop's answer was lost after the request reached it, so it may or may not have been saved: check the note before trying again");
+    // (it would write twice); J722: look whether it landed instead (settle). A read or check is safe to repeat on the next route.
+    if (answer === undefined && r.sent && change) return settle(root, op, p, data, "the laptop's answer over the relay socket was lost after the request reached it");
   }
   const link = process.env.PI_JOT_RELAY_LINK;
   if (answer === undefined && link && existsSync(link)) {
     const r = await viaLink(link, req);
     answer = r.answer;
-    if (answer === undefined && r.sent && !["exists", "read", "list", "find", "where"].includes(op))
-      throw new Error(`pi-jot: the laptop's answer over the link was lost after the request reached it (${r.why || "?"}), so it may or may not have been saved: check the note before trying again`);
+    if (answer === undefined && r.sent && change) return settle(root, op, p, data, `the laptop's answer over the link was lost after the request reached it (${r.why || "?"})`);
     if (answer === undefined) linkWhy = r.why || "";
   }
   if (answer === undefined) {
-    if (!ui?.input) throw new Error(`pi-jot: the laptop isn't reachable${linkWhy ? ` (${linkWhy})` : " (no relay socket or link answering, and no laptop window)"}; nothing was saved`);
-    answer = await ui.input(RELAY_TITLE, req, { timeout: RELAY_TIMEOUT_MS });
+    if (!ui?.input) throw new Error(`pi-jot: the laptop isn't reachable${linkWhy ? ` (${linkWhy})` : " (no relay socket or link answering, and no laptop window)"}; nothing was saved`); // (never sent: certain)
+    answer = await ui.input(RELAY_TITLE, req, { timeout: relayTimeout() });
+    // J722: no answer from the window (timed out or cancelled; pi can't tell which) doesn't mean the window never got it
+    const why = `the laptop didn't answer (asleep, or no window connected${linkWhy ? `; link: ${linkWhy}` : ""})`;
+    if (answer === undefined) { if (change) return settle(root, op, p, data, why); throw new Error(`pi-jot: ${why}; nothing was saved`); }
   }
-  if (answer === undefined) throw new Error(`pi-jot: the laptop didn't answer (asleep, or no window connected${linkWhy ? `; link: ${linkWhy}` : ""}); nothing was saved`);
-  let r: any; try { r = JSON.parse(answer); } catch { throw new Error("pi-jot: the laptop window sent an unreadable answer; nothing was saved"); }
+  let r: any; try { r = JSON.parse(answer); } catch {
+    if (change) return settle(root, op, p, data, "the laptop sent an unreadable answer");
+    throw new Error("pi-jot: the laptop sent an unreadable answer; nothing was saved");
+  }
   if (!r?.ok) throw new Error(`pi-jot (laptop): ${r?.error || "failed"}`);
   return r.value;
+}
+
+// J722 (Angus, nss2a: "and then can't you check or ask someone to check"): a change that MAY have reached the laptop is never
+// repeated (it could save twice). Instead pi-jot asks the laptop, with the read-only ops through the same routes, whether the
+// file now holds it: an append's exact text (pi-jot's "- [HH:MM TZ] <text>" entry, stamped to the minute), a write's whole body,
+// a mkdir's folder. Saved: the call succeeds and its result says "saved (checked: …)". Not there: "not saved (checked: …)". The
+// check itself fails or times out: "may or may not have been saved … unknown", with the file to ask a laptop agent to look at.
+async function settle(root: string, op: string, p: string, data: string | undefined, why: string): Promise<any> {
+  const rel = relPath(root, p);
+  let has: boolean;
+  try {
+    const there = (await call(root, "exists", p)) === true;
+    if (op === "mkdir" || !there) has = there;
+    else { const cur = String(await call(root, "read", p)); has = op === "write" ? cur === data : cur.includes(String(data ?? "")); }
+  } catch (e) {
+    const msg = `pi-jot: ${why}, so it may or may not have been saved; checking ${rel} couldn't reach the laptop either (${(e as Error).message.replace(/^pi-jot( \(laptop\))?: /, "").replace(/; nothing was saved$/, "")}), so the outcome is unknown: ask an agent on the laptop to check ${rel} before saving it again`;
+    console.error(msg);
+    throw new Error(msg);
+  }
+  if (!has) {
+    const msg = `pi-jot: not saved (checked: ${rel} doesn't have it; ${why}). Nothing was repeated automatically: save it again if you still want it`;
+    console.error(msg);
+    throw new Error(msg);
+  }
+  console.error(`pi-jot: saved (checked: ${rel} has it; ${why})`);
+  if (op === "mkdir") return undefined;
+  let shown = rel; try { shown = String(await call(root, "where", p)); } catch { /* the relative path will do */ }
+  return `${shown} — saved (checked: ${rel} has it; ${why})`;
 }
 
 /** File access for one jot root. Writes return where the file really is (the laptop's path in relay mode). */

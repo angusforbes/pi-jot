@@ -161,21 +161,88 @@ test("the relay socket (PI_JOT_RELAY_SOCKET) is used first: a windowless agent's
   expect(listAll(REMOTE)).toEqual([]);
 });
 
-test("(JotAllCheck) a change whose socket answer is lost is NOT repeated through the window: one line, and 'may or may not' said", async () => {
+test("(JotAllCheck, J722) a change whose socket answer is lost is NOT repeated: one line, and the check finds it: 'saved (checked…)'", async () => {
   const net = await import("node:net");
   const sock = join(T, "lost.sock");
   const srv = net.createServer((c) => { let b = ""; c.on("data", (d) => { b += d; const i = b.indexOf("\n"); if (i >= 0) { answer(b.slice(0, i)); c.destroy(); } }); }); // carries it out, never answers
   await new Promise<void>((ok) => srv.listen(sock, ok));
   process.env.PI_JOT_RELAY_SOCKET = sock;
-  let windowCalls = 0;
+  const winOps: string[] = [];
   const { noteUi, io } = await import("../src/io.ts");
-  noteUi({ ui: { input: async (_t: string, ph?: string) => { windowCalls++; return answer(ph!); } } });
-  const f = join(REMOTE, "Notes/LostAck.md");
-  await expect(io(REMOTE).append(f, "exactly once\n")).rejects.toThrow(/may or may not/);
-  expect(readFileSync(join(LAPTOP, "Notes/LostAck.md"), "utf8")).toBe("exactly once\n");
-  expect(windowCalls).toBe(0);
-  srv.close(); delete process.env.PI_JOT_RELAY_SOCKET; noteUi(ctx);
+  noteUi({ ui: { input: async (_t: string, ph?: string) => { winOps.push(JSON.parse(ph!).op); return answer(ph!); } } });
+  try {
+    const f = join(REMOTE, "Notes/LostAck.md");
+    const w = await io(REMOTE).append(f, "exactly once\n");
+    expect(w).toContain("saved (checked: Notes/LostAck.md has it");
+    expect(w.startsWith(join(LAPTOP, "Notes/LostAck.md"))).toBe(true); // the laptop path, from the check's "where"
+    expect(readFileSync(join(LAPTOP, "Notes/LostAck.md"), "utf8")).toBe("exactly once\n");
+    expect(winOps.filter((o) => !["exists", "read", "where"].includes(o))).toEqual([]); // the check reads; the change never repeats
+  } finally { srv.close(); delete process.env.PI_JOT_RELAY_SOCKET; noteUi(ctx); }
 });
+
+// ---- J722 (nss2a): a change that MAY have reached the laptop is checked, never repeated ----------------------------------------
+// The window stands in for the laptop: `onChange` decides what happens to a write / append / mkdir (carried out or not, and what
+// comes back); reads ("exists", "read", "where") are answered normally unless `reads` says otherwise.
+function laptopWindow(onChange: (ph: string) => string | undefined, reads: "answer" | "silent" = "answer") {
+  const ops: string[] = [];
+  const input = async (_t: string, ph?: string) => { const op = JSON.parse(ph!).op; ops.push(op);
+    if (["exists", "read", "where", "list", "find"].includes(op)) return reads === "answer" ? answer(ph!) : undefined;
+    return onChange(ph!); };
+  return { ops, ui: { input } };
+}
+test("J722 the window carried out the append but its answer timed out (undefined): checked, 'saved (checked: … has it)', written once", async () => {
+  const { noteUi, io } = await import("../src/io.ts");
+  const win = laptopWindow((ph) => { answer(ph); return undefined; }); noteUi(win);
+  try {
+    const w = await io(REMOTE).append(join(REMOTE, "Notes/WinTimeout.md"), "- [10:00 CDT] landed\n");
+    expect(w).toMatch(/saved \(checked: Notes\/WinTimeout\.md has it; the laptop didn't answer/);
+    expect(readFileSync(join(LAPTOP, "Notes/WinTimeout.md"), "utf8")).toBe("- [10:00 CDT] landed\n");
+    expect(win.ops.filter((o) => o === "append").length).toBe(1);
+    expect(listAll(REMOTE)).toEqual([]);
+  } finally { noteUi(ctx); }
+});
+test("J722 an unreadable answer after a whole-file write that landed: checked, 'saved (checked…)'", async () => {
+  const { noteUi, io } = await import("../src/io.ts");
+  const win = laptopWindow((ph) => { answer(ph); return "<<garbled>>"; }); noteUi(win);
+  try {
+    const w = await io(REMOTE).write(join(REMOTE, "Notes/Garbled.md"), "whole body\n");
+    expect(w).toContain("saved (checked: Notes/Garbled.md has it; the laptop sent an unreadable answer");
+    expect(win.ops.filter((o) => o === "write").length).toBe(1);
+  } finally { noteUi(ctx); }
+});
+test("J722 the append never landed and the window timed out: checked, 'not saved (checked: … doesn't have it)', nothing written", async () => {
+  const { noteUi, io } = await import("../src/io.ts");
+  mkdirSync(join(LAPTOP, "Notes"), { recursive: true }); writeFileSync(join(LAPTOP, "Notes/NotLanded.md"), "- [09:00 CDT] older entry\n");
+  const win = laptopWindow(() => undefined); noteUi(win);
+  try {
+    await expect(io(REMOTE).append(join(REMOTE, "Notes/NotLanded.md"), "- [10:00 CDT] lost one\n")).rejects.toThrow(/not saved \(checked: Notes\/NotLanded\.md doesn't have it/);
+    await expect(io(REMOTE).append(join(REMOTE, "Notes/NeverMade.md"), "- [10:00 CDT] x\n")).rejects.toThrow(/not saved \(checked: Notes\/NeverMade\.md doesn't have it/); // (no file at all)
+    expect(readFileSync(join(LAPTOP, "Notes/NotLanded.md"), "utf8")).toBe("- [09:00 CDT] older entry\n");
+    expect(win.ops.filter((o) => o === "append").length).toBe(2); // once each, never repeated
+  } finally { noteUi(ctx); }
+});
+test("J722 the answer is lost and the check can't reach the laptop either: 'may or may not … unknown', ask a laptop agent; no repeat", async () => {
+  const { noteUi, io } = await import("../src/io.ts");
+  const win = laptopWindow((ph) => { answer(ph); return undefined; }, "silent"); noteUi(win);
+  try {
+    const err = await io(REMOTE).append(join(REMOTE, "Notes/Unknown.md"), "- [10:00 CDT] who knows\n").then(() => "resolved", (e) => String(e.message));
+    expect(err).toMatch(/may or may not have been saved.*outcome is unknown: ask an agent on the laptop to check Notes\/Unknown\.md/);
+    expect(err).not.toMatch(/nothing was saved|not saved \(checked|saved \(checked/);
+    expect(win.ops.filter((o) => o === "append").length).toBe(1);
+  } finally { noteUi(ctx); }
+});
+test("J722 the check itself times out (a socket that takes the request and then hangs): 'unknown', never a guess", async () => {
+  const net = await import("node:net"); const sock = join(T, "hang.sock"); const conns: any[] = [];
+  const srv = net.createServer((c) => { conns.push(c); let b = ""; c.on("data", (d) => { b += d; const i = b.indexOf("\n"); if (i >= 0) { const r = b.slice(0, i); if (JSON.parse(r).op === "append") answer(r); } }); }); // never answers, never closes
+  await new Promise<void>((ok) => srv.listen(sock, ok));
+  process.env.PI_JOT_RELAY_SOCKET = sock;
+  const { noteUi, io } = await import("../src/io.ts"); noteUi({ ui: { input: async () => undefined } });
+  try {
+    const err = await io(REMOTE).append(join(REMOTE, "Notes/Hang.md"), "- [10:00 CDT] hung\n").then(() => "resolved", (e) => String(e.message));
+    expect(err).toMatch(/may or may not have been saved.*outcome is unknown/);
+    expect(readFileSync(join(LAPTOP, "Notes/Hang.md"), "utf8")).toBe("- [10:00 CDT] hung\n"); // (it had landed: the check just couldn't say)
+  } finally { for (const c of conns) c.destroy(); srv.close(); delete process.env.PI_JOT_RELAY_SOCKET; noteUi(ctx); }
+}, 15000);
 
 // ---- J569: the hyprpi link route (link.call op "jot") -------------------------------------------------------------------------
 async function fakeDaemon(sock: string, mode: "up" | "nolink" | "lost") {
@@ -201,9 +268,9 @@ test("J569 no H panel open (link down): refused at once, nothing sent, nothing s
   const sock = join(T, "daemon-nolink.sock"); const { srv } = await fakeDaemon(sock, "nolink");
   process.env.PI_JOT_RELAY_LINK = sock;
   const { noteUi, io } = await import("../src/io.ts");
-  noteUi({ ui: { input: async () => undefined } }); // a windowless agent: its window request goes nowhere
+  noteUi({ ui: { input: async () => undefined } }); // a windowless agent: its window request goes nowhere (pi can't tell that from a timeout)
   const before = listAll(LAPTOP).length;
-  await expect(io(REMOTE).append(join(REMOTE, "Notes/NoLink.md"), "x\n")).rejects.toThrow(/nothing was saved.*panels is open|panels is open.*nothing was saved/s);
+  await expect(io(REMOTE).append(join(REMOTE, "Notes/NoLink.md"), "x\n")).rejects.toThrow(/panels is open.*may or may not have been saved.*unknown/s); // (J722: the window's silence is no proof it never got it)
   expect(listAll(LAPTOP).length).toBe(before);
   srv.close(); delete process.env.PI_JOT_RELAY_LINK; noteUi(ctx);
 });
@@ -215,12 +282,12 @@ test("J569 link down but the agent has a window: falls back to the window and sa
   expect(readFileSync(w, "utf8")).toBe("via window\n");
   srv.close(); delete process.env.PI_JOT_RELAY_LINK;
 });
-test("J569 a write whose link answer is lost after it was sent is not repeated through the window", async () => {
+test("J569 a write whose link answer is lost after it was sent is not repeated through the window (J722: checked instead)", async () => {
   const sock = join(T, "daemon-lost.sock"); const { srv } = await fakeDaemon(sock, "lost");
   process.env.PI_JOT_RELAY_LINK = sock; let win = 0;
   const { noteUi, io } = await import("../src/io.ts");
-  noteUi({ ui: { input: async (_t: string, ph?: string) => { win++; return answer(ph!); } } });
-  await expect(io(REMOTE).append(join(REMOTE, "Notes/LinkLost.md"), "once\n")).rejects.toThrow(/may or may not/);
+  noteUi({ ui: { input: async (_t: string, ph?: string) => { if (!["exists", "read", "where"].includes(JSON.parse(ph!).op)) win++; return answer(ph!); } } }); // (J722: the check may read through it)
+  expect(await io(REMOTE).append(join(REMOTE, "Notes/LinkLost.md"), "once\n")).toContain("saved (checked: Notes/LinkLost.md has it; the laptop's answer over the link was lost");
   expect(readFileSync(join(LAPTOP, "Notes/LinkLost.md"), "utf8")).toBe("once\n"); expect(win).toBe(0);
   srv.close(); delete process.env.PI_JOT_RELAY_LINK; noteUi(ctx);
 });
