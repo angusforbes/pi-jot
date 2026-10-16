@@ -111,7 +111,8 @@ async function call(root: string, op: string, p: string, data?: string): Promise
 // J722 (Angus, nss2a: "and then can't you check or ask someone to check"): a change that MAY have reached the laptop is never
 // repeated (it could save twice). Instead pi-jot asks the laptop, with the read-only ops through the same routes, whether the
 // file now holds it: an append's exact text (pi-jot's "- [HH:MM TZ] <text>" entry, stamped to the minute), a write's whole body,
-// a mkdir's folder. Saved: the call succeeds and its result says "saved (checked: …)". Not there: "not saved (checked: …)". The
+// a mkdir's folder. Saved: the call succeeds (the plain path) and takeCheckNotes() has "saved (checked: …)". Not there: "not saved
+// (checked at HH:MM: …)", with a warning that a late delivery from a sleeping laptop may still land. The
 // check itself fails or times out: "may or may not have been saved … unknown", with the file to ask a laptop agent to look at.
 async function settle(root: string, op: string, p: string, data: string | undefined, why: string): Promise<any> {
   const rel = relPath(root, p);
@@ -126,19 +127,30 @@ async function settle(root: string, op: string, p: string, data: string | undefi
     throw new Error(msg);
   }
   if (!has) {
-    const msg = `pi-jot: not saved (checked: ${rel} doesn't have it; ${why}). Nothing was repeated automatically: save it again if you still want it`;
+    const at = new Date().toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false });
+    const msg = `pi-jot: not saved (checked at ${at}: ${rel} doesn't have it; if the laptop was asleep it may still arrive, so check again before re-saving). (${why}; nothing was sent twice)`;
     console.error(msg);
     throw new Error(msg);
   }
-  console.error(`pi-jot: saved (checked: ${rel} has it; ${why})`);
-  if (op === "mkdir") return undefined;
+  const note = `saved (checked: ${rel} has it; ${why})`;
+  console.error(`pi-jot: ${note}`);
+  if (op === "mkdir") return undefined; // (only a folder on the way to the entry: logged, not shown)
+  checkNotes.push(note);
   let shown = rel; try { shown = String(await call(root, "where", p)); } catch { /* the relative path will do */ }
-  return `${shown} — saved (checked: ${rel} has it; ${why})`;
+  return shown; // a plain path, as from a normal answer: the note goes out through takeCheckNotes()
 }
+
+// J722 (Parity): a checked save returns the plain path like any other; its "saved (checked …)" note waits here for the caller
+// that reports the save (the command's notify, the tool's text), which appends takeCheckNotes(). io() clears what a failed
+// operation left, so a note never lands on another save's message.
+const checkNotes: string[] = [];
+/** The "saved (checked …)" notes since the last call, as " — note" to append to a save message ("" when there are none). */
+export function takeCheckNotes(): string { const s = checkNotes.splice(0).join("; "); return s ? ` — ${s}` : ""; }
 
 /** File access for one jot root. Writes return where the file really is (the laptop's path in relay mode). */
 export function io(root: string) {
   const relay = relayWanted();
+  checkNotes.length = 0; // (a new operation: nothing left over from an earlier one)
   return {
     relay,
     exists: async (p: string): Promise<boolean> => (relay ? (await call(root, "exists", p)) === true : existsSync(p)),

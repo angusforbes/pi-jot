@@ -6,7 +6,7 @@ import { homedir } from "node:os";
 import { Type } from "typebox";
 import { dirname, relative, resolve, sep } from "node:path";
 import { addWords, checkQuestionNumbers, dateStr, dupes, discussSections, openQuestions, fill, jotRoot, type JotConfig, type Kind, loadConfig, parseInput, PLAN_STATUSES, planStatus, renderPlan, resolvePaths, safeTitle, setBody, setStatus, tickTask, titleFrom, wordsEntry, writeEntry } from "./core.ts";
-import { io, noteUi, relayWanted } from "./io.ts"; // J559: file access, local or relayed to a hyprpi remote agent's laptop window
+import { io, noteUi, relayWanted, takeCheckNotes } from "./io.ts"; // J559: file access, local or relayed to a hyprpi remote agent's laptop window
 
 // J398: an open planning conversation (/jot-soliloquy, /jot-parallel) in this session. Persisted with
 // pi.appendEntry so it survives a restart or /reload of the same session.
@@ -153,7 +153,7 @@ export default function piJot(pi: ExtensionAPI) {
   const keepWords = (text: string) => { const c = conv, at = new Date(); return serial(async () => {
     if (!c || !String(text).trim()) return false;
     const fs = io(jotRoot(loadConfig()));
-    if (c.file && (await fs.exists(c.file))) await fs.write(c.file, addWords(await fs.read(c.file), text, at));
+    if (c.file && (await fs.exists(c.file))) { await fs.write(c.file, addWords(await fs.read(c.file), text, at)); takeCheckNotes(); } // (no message to add it to: settle logged it)
     else c.words.push(wordsEntry(text, at));
     if (c === conv) saveConv();
     return true;
@@ -220,7 +220,7 @@ export default function piJot(pi: ExtensionAPI) {
         if (title || kind.title !== "agent") {
           try {
             const file = await writeEntry(cfg, name, kind, text, title ?? titleFrom(text, name[0].toUpperCase() + name.slice(1)), ctx.cwd ?? process.cwd());
-            ctx.ui.notify(`${name[0].toUpperCase() + name.slice(1)} saved: ${tilde(file)}`, "info");
+            ctx.ui.notify(`${name[0].toUpperCase() + name.slice(1)} saved: ${tilde(file)}${takeCheckNotes()}`, "info");
           } catch (err) {
             ctx.ui.notify(`Could not save the ${name}: ${(err as Error).message}`, "error");
           }
@@ -294,7 +294,7 @@ export default function piJot(pi: ExtensionAPI) {
         if (action === "read") { const shown = await fs.where(f); return out(`${shown}\n\n${note}`, { file: shown, status: planStatus(note), action }); }
         note = action === "status" ? setStatus(note, String(p.status)) : tickTask(note, String(p.task ?? ""), p.done !== false);
         const where = await fs.write(f, note);
-        return out(`${action === "status" ? `Status ${p.status}` : `${p.done === false ? "Unticked" : "Ticked"} ${p.task}`}: ${where}`, { file: where, status: planStatus(note), action, task: p.task });
+        return out(`${action === "status" ? `Status ${p.status}` : `${p.done === false ? "Unticked" : "Ticked"} ${p.task}`}: ${where}${takeCheckNotes()}`, { file: where, status: planStatus(note), action, task: p.task });
       }
       if (action === "close") { const f = conv?.file; conv = null; saveConv(); return out(f ? `Conversation closed; the note stays: ${f}` : "No conversation was open", { file: f, action }); }
       if (action !== "update") throw new Error(`Unknown action "${action}" (update | read | status | tick | close)`);
@@ -321,7 +321,7 @@ export default function piJot(pi: ExtensionAPI) {
       const file = where, kname = conv.kind;
       if (p.close) conv = null;
       saveConv();
-      return out(`Saved ${file} (status ${status}${p.close ? "; conversation closed" : ""})`, { file, status, action: "update", closed: !!p.close, kind: kname });
+      return out(`Saved ${file} (status ${status}${p.close ? "; conversation closed" : ""})${takeCheckNotes()}`, { file, status, action: "update", closed: !!p.close, kind: kname });
   }
 
   // J561 (Angus "23a"): in relay mode the agent's own read/edit tools can't reach the laptop's notes, so /jot-todo works through this
@@ -343,7 +343,7 @@ export default function piJot(pi: ExtensionAPI) {
       const at = (r: string) => resolve(root, String(r || ".").replace(/^\/+/, ""));
       const out = (text: string, details: any) => ({ content: [{ type: "text", text }], details });
       if (a === "read") return out(await fs.read(at(p.path)), { action: a, path: p.path });
-      if (a === "write") { if (typeof p.content !== "string") throw new Error("write needs content (the whole file)"); await fs.mkdirp(dirname(at(p.path))); const w = await fs.write(at(p.path), p.content); return out(`Saved ${w}`, { action: a, path: p.path, file: w }); }
+      if (a === "write") { if (typeof p.content !== "string") throw new Error("write needs content (the whole file)"); await fs.mkdirp(dirname(at(p.path))); const w = await fs.write(at(p.path), p.content); return out(`Saved ${w}${takeCheckNotes()}`, { action: a, path: p.path, file: w }); }
       if (a === "list") return out((await fs.list(at(p.path))).join("\n") || "(empty)", { action: a, path: p.path });
       if (a === "find") return out((await fs.find(String(p.name || ""))).join("\n") || "(none)", { action: a, name: p.name });
       throw new Error(`Unknown action "${a}" (read | write | list | find)`);
@@ -389,7 +389,7 @@ export default function piJot(pi: ExtensionAPI) {
       const tail = kind.discuss && !kind.handler?.length ? discussSections(who, p.pending_id ? p.summary : "", p.discussion) : ""; // (written with the entry, in one append)
       const file = await writeEntry(cfg, kindName, kind, text, safeTitle(String(p.title)), ctx?.cwd ?? process.cwd(), { author }, tail);
       if (p.pending_id) pending.delete(p.pending_id);
-      return { content: [{ type: "text", text: `Saved to ${file}` }], details: { file, kind: kindName } };
+      return { content: [{ type: "text", text: `Saved to ${file}${takeCheckNotes()}` }], details: { file, kind: kindName } };
     },
   });
 }

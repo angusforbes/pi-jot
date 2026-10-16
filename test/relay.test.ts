@@ -168,13 +168,13 @@ test("(JotAllCheck, J722) a change whose socket answer is lost is NOT repeated: 
   await new Promise<void>((ok) => srv.listen(sock, ok));
   process.env.PI_JOT_RELAY_SOCKET = sock;
   const winOps: string[] = [];
-  const { noteUi, io } = await import("../src/io.ts");
+  const { noteUi, io, takeCheckNotes } = await import("../src/io.ts");
   noteUi({ ui: { input: async (_t: string, ph?: string) => { winOps.push(JSON.parse(ph!).op); return answer(ph!); } } });
   try {
     const f = join(REMOTE, "Notes/LostAck.md");
     const w = await io(REMOTE).append(f, "exactly once\n");
-    expect(w).toContain("saved (checked: Notes/LostAck.md has it");
-    expect(w.startsWith(join(LAPTOP, "Notes/LostAck.md"))).toBe(true); // the laptop path, from the check's "where"
+    expect(w).toBe(join(LAPTOP, "Notes/LostAck.md")); // a plain path (the laptop's, from the check's "where"), nothing added
+    expect(takeCheckNotes()).toContain("saved (checked: Notes/LostAck.md has it"); expect(takeCheckNotes()).toBe(""); // (taken once)
     expect(readFileSync(join(LAPTOP, "Notes/LostAck.md"), "utf8")).toBe("exactly once\n");
     expect(winOps.filter((o) => !["exists", "read", "where"].includes(o))).toEqual([]); // the check reads; the change never repeats
   } finally { srv.close(); delete process.env.PI_JOT_RELAY_SOCKET; noteUi(ctx); }
@@ -191,22 +191,24 @@ function laptopWindow(onChange: (ph: string) => string | undefined, reads: "answ
   return { ops, ui: { input } };
 }
 test("J722 the window carried out the append but its answer timed out (undefined): checked, 'saved (checked: … has it)', written once", async () => {
-  const { noteUi, io } = await import("../src/io.ts");
+  const { noteUi, io, takeCheckNotes } = await import("../src/io.ts");
   const win = laptopWindow((ph) => { answer(ph); return undefined; }); noteUi(win);
   try {
     const w = await io(REMOTE).append(join(REMOTE, "Notes/WinTimeout.md"), "- [10:00 CDT] landed\n");
-    expect(w).toMatch(/saved \(checked: Notes\/WinTimeout\.md has it; the laptop didn't answer/);
+    expect(w).toBe(join(LAPTOP, "Notes/WinTimeout.md"));
+    expect(takeCheckNotes()).toMatch(/saved \(checked: Notes\/WinTimeout\.md has it; the laptop didn't answer/);
     expect(readFileSync(join(LAPTOP, "Notes/WinTimeout.md"), "utf8")).toBe("- [10:00 CDT] landed\n");
     expect(win.ops.filter((o) => o === "append").length).toBe(1);
     expect(listAll(REMOTE)).toEqual([]);
   } finally { noteUi(ctx); }
 });
 test("J722 an unreadable answer after a whole-file write that landed: checked, 'saved (checked…)'", async () => {
-  const { noteUi, io } = await import("../src/io.ts");
+  const { noteUi, io, takeCheckNotes } = await import("../src/io.ts");
   const win = laptopWindow((ph) => { answer(ph); return "<<garbled>>"; }); noteUi(win);
   try {
     const w = await io(REMOTE).write(join(REMOTE, "Notes/Garbled.md"), "whole body\n");
-    expect(w).toContain("saved (checked: Notes/Garbled.md has it; the laptop sent an unreadable answer");
+    expect(w).toBe(join(LAPTOP, "Notes/Garbled.md"));
+    expect(takeCheckNotes()).toContain("saved (checked: Notes/Garbled.md has it; the laptop sent an unreadable answer");
     expect(win.ops.filter((o) => o === "write").length).toBe(1);
   } finally { noteUi(ctx); }
 });
@@ -215,8 +217,8 @@ test("J722 the append never landed and the window timed out: checked, 'not saved
   mkdirSync(join(LAPTOP, "Notes"), { recursive: true }); writeFileSync(join(LAPTOP, "Notes/NotLanded.md"), "- [09:00 CDT] older entry\n");
   const win = laptopWindow(() => undefined); noteUi(win);
   try {
-    await expect(io(REMOTE).append(join(REMOTE, "Notes/NotLanded.md"), "- [10:00 CDT] lost one\n")).rejects.toThrow(/not saved \(checked: Notes\/NotLanded\.md doesn't have it/);
-    await expect(io(REMOTE).append(join(REMOTE, "Notes/NeverMade.md"), "- [10:00 CDT] x\n")).rejects.toThrow(/not saved \(checked: Notes\/NeverMade\.md doesn't have it/); // (no file at all)
+    await expect(io(REMOTE).append(join(REMOTE, "Notes/NotLanded.md"), "- [10:00 CDT] lost one\n")).rejects.toThrow(/not saved \(checked at \d\d:\d\d: Notes\/NotLanded\.md doesn't have it; if the laptop was asleep it may still arrive, so check again before re-saving\)/);
+    await expect(io(REMOTE).append(join(REMOTE, "Notes/NeverMade.md"), "- [10:00 CDT] x\n")).rejects.toThrow(/not saved \(checked at \d\d:\d\d: Notes\/NeverMade\.md doesn't have it/); // (no file at all)
     expect(readFileSync(join(LAPTOP, "Notes/NotLanded.md"), "utf8")).toBe("- [09:00 CDT] older entry\n");
     expect(win.ops.filter((o) => o === "append").length).toBe(2); // once each, never repeated
   } finally { noteUi(ctx); }
@@ -227,8 +229,21 @@ test("J722 the answer is lost and the check can't reach the laptop either: 'may 
   try {
     const err = await io(REMOTE).append(join(REMOTE, "Notes/Unknown.md"), "- [10:00 CDT] who knows\n").then(() => "resolved", (e) => String(e.message));
     expect(err).toMatch(/may or may not have been saved.*outcome is unknown: ask an agent on the laptop to check Notes\/Unknown\.md/);
-    expect(err).not.toMatch(/nothing was saved|not saved \(checked|saved \(checked/);
+    expect(err).not.toMatch(/nothing was saved|saved \(checked/);
     expect(win.ops.filter((o) => o === "append").length).toBe(1);
+  } finally { noteUi(ctx); }
+});
+test("J722 jot_save and /jot-note after a lost answer: details.file stays a plain path; the text / notify says 'saved (checked…)'", async () => {
+  const { noteUi } = await import("../src/io.ts");
+  const win = laptopWindow((ph) => { const a = answer(ph); return JSON.parse(ph).op === "append" ? undefined : a; }); // only the entry's answer is lost
+  noteUi(win);
+  try {
+    const r = await tools.jot_save.execute("s1", { kind: "note", title: "Checked Save", text: "kept despite the lost answer" }, null, null, { ...ctx, ui: { ...win.ui, notify: ui.notify } });
+    expect(r.details.file).toBe(join(LAPTOP, "Notes/Checked Save.md"));
+    expect(r.content[0].text).toBe(`Saved to ${join(LAPTOP, "Notes/Checked Save.md")} — saved (checked: Notes/Checked Save.md has it; the laptop didn't answer (asleep, or no window connected))`);
+    await cmds["jot-note"].handler("@CheckedCmd typed words", { ...ctx, ui: { ...win.ui, notify: ui.notify } });
+    expect(notes.at(-1)).toMatch(/^Note saved: .*CheckedCmd\.md — saved \(checked: Notes\/CheckedCmd\.md has it/);
+    expect(win.ops.filter((o) => o === "append").length).toBe(2);
   } finally { noteUi(ctx); }
 });
 test("J722 the check itself times out (a socket that takes the request and then hangs): 'unknown', never a guess", async () => {
@@ -287,7 +302,8 @@ test("J569 a write whose link answer is lost after it was sent is not repeated t
   process.env.PI_JOT_RELAY_LINK = sock; let win = 0;
   const { noteUi, io } = await import("../src/io.ts");
   noteUi({ ui: { input: async (_t: string, ph?: string) => { if (!["exists", "read", "where"].includes(JSON.parse(ph!).op)) win++; return answer(ph!); } } }); // (J722: the check may read through it)
-  expect(await io(REMOTE).append(join(REMOTE, "Notes/LinkLost.md"), "once\n")).toContain("saved (checked: Notes/LinkLost.md has it; the laptop's answer over the link was lost");
+  expect(await io(REMOTE).append(join(REMOTE, "Notes/LinkLost.md"), "once\n")).toBe(join(LAPTOP, "Notes/LinkLost.md"));
+  expect((await import("../src/io.ts")).takeCheckNotes()).toContain("saved (checked: Notes/LinkLost.md has it; the laptop's answer over the link was lost");
   expect(readFileSync(join(LAPTOP, "Notes/LinkLost.md"), "utf8")).toBe("once\n"); expect(win).toBe(0);
   srv.close(); delete process.env.PI_JOT_RELAY_LINK; noteUi(ctx);
 });
